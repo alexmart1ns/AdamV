@@ -4,14 +4,11 @@ import os
 
 def create_cifar_kaggle_notebook():
     # Read the C++ kernel source
-    with open('csrc/adamv_kernel.cu', 'r') as f:
+    with open('adamv/csrc/adamv_kernel.cu', 'r', encoding="utf-8") as f:
         cuda_code = f.read()
-        
-    with open('csrc/adamv_kernel.cpp', 'r') as f:
-        cpp_code = f.read()
 
     # Read the Python optimizer source
-    with open('torch_adamv.py', 'r') as f:
+    with open("adamv/torch_adamv.py", "r", encoding="utf-8") as f:
         python_opt = f.read()
 
     # Read the CIFAR-10 arena source

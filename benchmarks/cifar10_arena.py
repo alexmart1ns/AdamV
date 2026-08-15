@@ -97,11 +97,10 @@ def run_cifar10_arena():
         
         if opt_name == 'AdamW':
             opt = torch.optim.AdamW(model.parameters(), lr=0.01, weight_decay=1e-4)
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=total_steps)
         else:
             opt = AdamVCpp(model.parameters(), lr=0.01, weight_decay=1e-4, total_steps=total_steps, bakhshali_threshold=10.0, enable_omni=False)
-            scheduler = None
-            
+        
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=total_steps)
         criterion = nn.CrossEntropyLoss()
         
         train_losses = []
@@ -124,10 +123,9 @@ def run_cifar10_arena():
                 
                 if opt_name == 'AdamW':
                     opt.step()
-                    scheduler.step()
                 else:
                     opt.step(current_loss=loss.item())
-                    
+                scheduler.step()
                 epoch_loss += loss.item()
                 
             avg_train_loss = epoch_loss / len(trainloader)

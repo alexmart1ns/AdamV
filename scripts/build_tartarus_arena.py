@@ -3,9 +3,9 @@ import os
 
 def create_notebook():
     # Carregar o código do AdamV e do Kernel CUDA
-    with open("torch_adamv.py", "r", encoding="utf-8") as f:
+    with open("adamv/torch_adamv.py", "r", encoding="utf-8") as f:
         adamv_code = f.read()
-    with open("csrc/adamv_kernel.cu", "r", encoding="utf-8") as f:
+    with open("adamv/csrc/adamv_kernel.cu", "r", encoding="utf-8") as f:
         cuda_code = f.read()
     
     # Remover importações e inibir as dependências estáticas

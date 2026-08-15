@@ -193,9 +193,8 @@ def run_vision_arena():
             wd = 0.05
             optimizer = configure_optimizers(model, wd, lr, is_adamv=(opt_name=="AdamVCpp"))
             
-            # AdamW Scheduler: OneCycleLR mimics CosineAnnealing with Warmup
-            if opt_name == "AdamW":
-                scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr, steps_per_epoch=len(train_dl), epochs=epochs, pct_start=0.1)
+            # Scheduler for both optimizers
+            scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr, steps_per_epoch=len(train_dl), epochs=epochs, pct_start=0.1)
                 
             history_acc = []
             
@@ -209,8 +208,7 @@ def run_vision_arena():
                     loss.backward()
                     
                     optimizer.step()
-                    if opt_name == "AdamW":
-                        scheduler.step()
+                    scheduler.step()
                         
                 val_loss, val_acc = evaluate(model, val_dl, device)
                 print(f"Epoch {epoch}: Val Acc {val_acc:.2f}%")

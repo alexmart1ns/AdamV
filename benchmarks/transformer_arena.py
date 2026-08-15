@@ -240,9 +240,8 @@ def run_transformer_arena():
                 for group in optimizer.param_groups:
                     group['total_steps'] = max_iters
             
-            # Scheduler ONLY for AdamW
-            if opt_name == "AdamW":
-                scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr, total_steps=max_iters, pct_start=0.1)
+            # Scheduler for both optimizers (Fair Benchmark)
+            scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr, total_steps=max_iters, pct_start=0.1)
             
             train_iter = iter(train_dl)
             history = []
@@ -268,8 +267,7 @@ def run_transformer_arena():
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 
-                if opt_name == "AdamW":
-                    scheduler.step()
+                scheduler.step()
                     
             results[opt_name].append(history)
             
