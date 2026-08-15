@@ -1,123 +1,180 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, TensorDataset
+import torchvision
+import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 import time
-from torch_omega_optimizer import OmegaOptimizer
+import os
+import sys
 
-# Uma CNN rápida projetada para o dataset CIFAR (3x32x32)
-class FastCNN(nn.Module):
-    def __init__(self):
-        super(FastCNN, self).__init__()
-        self.conv1 = nn.Conv2d(3, 32, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.fc1 = nn.Linear(64 * 8 * 8, 256)
-        self.fc2 = nn.Linear(256, 10)
+# Ensure AdamV can be imported
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:
+    from adamv import AdamVCpp
+except ImportError:
+    print("Warning: Could not import AdamVCpp. Ensure you are running from the correct directory.")
 
+class Mul(nn.Module):
+    def __init__(self, weight):
+        super(Mul, self).__init__()
+        self.weight = weight
     def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = x.view(x.size(0), -1)
-        x = F.relu(self.fc1(x))
-        x = self.fc2(x)
-        return x
+        return x * self.weight
 
-def train_model(optimizer_name, model, dataloader, epochs=10, lr=1e-3, device='cpu'):
-    model.to(device)
-    
-    total_steps = len(dataloader) * epochs
-    
-    if optimizer_name == "AdamW":
-        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
-        # Schedulers tradicionais
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps)
-    elif optimizer_name == "TrueOmega":
-        # Nosso otimizador nativo!
-        optimizer = OmegaOptimizer(model.parameters(), lr=lr*1.5, weight_decay=0.01, total_steps=total_steps)
-        scheduler = None
-    
-    criterion = nn.CrossEntropyLoss()
-    
-    loss_history = []
-    
-    for epoch in range(epochs):
-        model.train()
-        epoch_loss = 0.0
+class Flatten(nn.Module):
+    def forward(self, x): return x.view(x.size(0), -1)
+
+class Residual(nn.Module):
+    def __init__(self, module):
+        super(Residual, self).__init__()
+        self.module = module
+    def forward(self, x): return x + self.module(x)
+
+def conv_bn(channels_in, channels_out, kernel_size=3, stride=1, padding=1, groups=1):
+    return nn.Sequential(
+            nn.Conv2d(channels_in, channels_out, kernel_size=kernel_size,
+                      stride=stride, padding=padding, groups=groups, bias=False),
+            nn.BatchNorm2d(channels_out),
+            nn.ReLU(inplace=True)
+    )
+
+class ResNet9(nn.Module):
+    def __init__(self, num_classes=10):
+        super(ResNet9, self).__init__()
+        self.model = nn.Sequential(
+            conv_bn(3, 64, kernel_size=3, stride=1, padding=1),
+            conv_bn(64, 128, kernel_size=5, stride=2, padding=2),
+            Residual(nn.Sequential(conv_bn(128, 128), conv_bn(128, 128))),
+            conv_bn(128, 256, kernel_size=3, stride=1, padding=1),
+            nn.MaxPool2d(2),
+            Residual(nn.Sequential(conv_bn(256, 256), conv_bn(256, 256))),
+            conv_bn(256, 128, kernel_size=3, stride=1, padding=0),
+            nn.AdaptiveMaxPool2d((1, 1)),
+            Flatten(),
+            nn.Linear(128, num_classes, bias=False),
+            Mul(0.2)
+        )
         
-        for batch_idx, (data, target) in enumerate(dataloader):
-            data, target = data.to(device), target.to(device)
+    def forward(self, x):
+        return self.model(x)
+
+def run_cifar10_arena():
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Running CIFAR-10 Arena on {device}")
+    
+    transform_train = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    ])
+    
+    transform_test = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    ])
+    
+    trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform_train)
+    trainloader = torch.utils.data.DataLoader(trainset, batch_size=512, shuffle=True, num_workers=2)
+    
+    testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform_test)
+    testloader = torch.utils.data.DataLoader(testset, batch_size=512, shuffle=False, num_workers=2)
+    
+    optimizers_to_run = ['AdamW', 'AdamV']
+    results = {}
+    epochs = 15
+    
+    import gc
+    
+    for opt_name in optimizers_to_run:
+        torch.cuda.empty_cache()
+        gc.collect()
+        torch.manual_seed(42)
+        model = ResNet9().to(device)
+        
+        total_steps = epochs * len(trainloader)
+        
+        if opt_name == 'AdamW':
+            opt = torch.optim.AdamW(model.parameters(), lr=0.01, weight_decay=1e-4)
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=total_steps)
+        else:
+            opt = AdamVCpp(model.parameters(), lr=0.01, weight_decay=1e-4, total_steps=total_steps, bakhshali_threshold=10.0, enable_omni=False)
+            scheduler = None
             
-            optimizer.zero_grad()
-            output = model(data)
-            loss = criterion(output, target)
-            loss.backward()
+        criterion = nn.CrossEntropyLoss()
+        
+        train_losses = []
+        test_accs = []
+        
+        print(f"\n[{opt_name}] Starting training...")
+        start_time = time.time()
+        
+        for epoch in range(epochs):
+            model.train()
+            epoch_loss = 0.0
             
-            # O TrueOmega precisa saber do loss para ativar o OMNI Kick
-            if optimizer_name == "TrueOmega":
-                optimizer.step(current_loss=loss.item())
-            else:
-                optimizer.step()
-                if scheduler:
+            for batch_idx, (inputs, targets) in enumerate(trainloader):
+                inputs, targets = inputs.to(device), targets.to(device)
+                
+                opt.zero_grad(set_to_none=True)
+                outputs = model(inputs)
+                loss = criterion(outputs, targets)
+                loss.backward()
+                
+                if opt_name == 'AdamW':
+                    opt.step()
                     scheduler.step()
+                else:
+                    opt.step(current_loss=loss.item())
                     
-            epoch_loss += loss.item()
+                epoch_loss += loss.item()
+                
+            avg_train_loss = epoch_loss / len(trainloader)
+            train_losses.append(avg_train_loss)
             
-        avg_loss = epoch_loss / len(dataloader)
-        loss_history.append(avg_loss)
-        print(f"[{optimizer_name}] Epoch {epoch+1}/{epochs} | Loss: {avg_loss:.4f}")
+            # Validation
+            model.eval()
+            correct = 0
+            total = 0
+            with torch.no_grad():
+                for inputs, targets in testloader:
+                    inputs, targets = inputs.to(device), targets.to(device)
+                    outputs = model(inputs)
+                    _, predicted = outputs.max(1)
+                    total += targets.size(0)
+                    correct += predicted.eq(targets).sum().item()
+            
+            acc = 100. * correct / total
+            test_accs.append(acc)
+            print(f"[{opt_name}] Epoch {epoch+1}/{epochs} | Train Loss: {avg_train_loss:.4f} | Test Acc: {acc:.2f}%")
+            
+        total_time = time.time() - start_time
+        print(f"[{opt_name}] Finished in {total_time:.2f}s | Final Acc: {test_accs[-1]:.2f}%")
+        results[opt_name] = {'loss': train_losses, 'acc': test_accs}
         
-    return loss_history
-
-def run_synthetic_cifar_arena():
-    print("=========================================================")
-    print(" ARENA PYTORCH: MEMORIZAÇÃO DE RUÍDO (Teste de Expressividade)")
-    print("=========================================================")
-    print("Em Deep Learning, um teste fundamental de poder de otimização")
-    print("é forçar a rede a memorizar imagens aleatórias com labels aleatórias.")
+    # Plot results
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Usando device: {device}")
+    for name, data in results.items():
+        ax1.plot(data['loss'], label=name, marker='o')
+        ax2.plot(data['acc'], label=name, marker='o')
+        
+    ax1.set_title('CIFAR-10 Train Loss (ResNet-9)')
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Loss')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
     
-    # Gerando dataset sintético "CIFAR" (ruído branco)
-    N = 2048 # 2048 imagens sintéticas
-    X = torch.randn(N, 3, 32, 32)
-    y = torch.randint(0, 10, (N,))
+    ax2.set_title('CIFAR-10 Test Accuracy (ResNet-9)')
+    ax2.set_xlabel('Epoch')
+    ax2.set_ylabel('Accuracy (%)')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
     
-    dataset = TensorDataset(X, y)
-    dataloader = DataLoader(dataset, batch_size=128, shuffle=True)
-    
-    epochs = 20
-    
-    print("\nIniciando AdamW SOTA...")
-    model_adam = FastCNN()
-    t0 = time.time()
-    loss_adam = train_model("AdamW", model_adam, dataloader, epochs=epochs, lr=3e-3, device=device)
-    print(f"-> Tempo AdamW: {time.time()-t0:.2f}s")
-    
-    print("\nIniciando True Omega...")
-    model_omega = FastCNN()
-    t0 = time.time()
-    loss_omega = train_model("TrueOmega", model_omega, dataloader, epochs=epochs, lr=3e-3, device=device)
-    print(f"-> Tempo True Omega: {time.time()-t0:.2f}s")
-    
-    plt.figure(figsize=(10, 6), facecolor='#1e1e2e')
-    ax = plt.gca()
-    ax.set_facecolor('#11111b')
-    
-    plt.plot(range(1, epochs+1), loss_adam, label='AdamW (Cosine)', color='#f38ba8', lw=2, linestyle='--')
-    plt.plot(range(1, epochs+1), loss_omega, label='True Omega (Nat PyTorch)', color='#a6e3a1', lw=3)
-    
-    plt.title('Capacidade de Memorização de Caos (CNN ResNet-Style)', color='#cdd6f4', fontsize=14)
-    plt.xlabel('Épocas', color='#cdd6f4')
-    plt.ylabel('CrossEntropy Loss', color='#cdd6f4')
-    plt.tick_params(colors='#cdd6f4')
-    plt.grid(alpha=0.2)
-    plt.legend()
     plt.tight_layout()
-    plt.savefig('pytorch_cnn_arena.png', dpi=200, facecolor='#1e1e2e')
-    print("\nGráfico gerado: 'pytorch_cnn_arena.png'")
+    plt.savefig('cifar10_arena_results.png', dpi=200)
+    print("\nResults saved to cifar10_arena_results.png")
 
-if __name__ == "__main__":
-    run_synthetic_cifar_arena()
+if __name__ == '__main__':
+    run_cifar10_arena()

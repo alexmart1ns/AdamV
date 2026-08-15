@@ -5,8 +5,7 @@ from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
 import time
 from sklearn.datasets import make_classification
-from torch_omega_optimizer import OmegaOptimizer
-from torch_omega_cpp import OmegaCppOptimizer
+from adamv import AdamV, AdamVCpp
 import numpy as np
 
 # A Arena do Abismo: 15 camadas profundas de pura dor de cabeça para o gradiente
@@ -40,11 +39,11 @@ def train_abyss(optimizer_name, model, dataloader, epochs=30, lr=1e-3):
     if optimizer_name == "AdamW":
         optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps)
-    elif optimizer_name == "TrueOmegaCpp":
+    elif optimizer_name == "AdamVCpp":
         # Usamos o Kernel C++ que criamos!
         # Ajustamos o limite do Bakhshali (bakhshali_threshold) para frear as explosões violentas da rede profunda
-        optimizer = OmegaCppOptimizer(model.parameters(), lr=lr*1.5, weight_decay=0.01, 
-                                      total_steps=total_steps, bakhshali_threshold=2.0)
+        optimizer = AdamVCpp(model.parameters(), lr=lr*1.5, weight_decay=0.01, 
+                             total_steps=total_steps, bakhshali_threshold=2.0)
         scheduler = None
         
     criterion = nn.CrossEntropyLoss()
@@ -60,7 +59,7 @@ def train_abyss(optimizer_name, model, dataloader, epochs=30, lr=1e-3):
             loss = criterion(output, target)
             loss.backward()
             
-            if optimizer_name == "TrueOmegaCpp":
+            if optimizer_name == "AdamVCpp":
                 optimizer.step(current_loss=loss.item())
             else:
                 optimizer.step()
@@ -101,10 +100,10 @@ def run_abyss_arena():
     loss_adam = train_abyss("AdamW", model_adam, dataloader, epochs=epochs, lr=lr_base)
     print(f"-> Tempo total: {time.time()-t0:.2f}s")
     
-    print("\n--- DESCENDO O ABISMO: TRUE OMEGA (C++ FUSED) ---")
-    model_omega = AbyssMLP(input_dim=100, num_classes=2, depth=15)
+    print("\n--- DESCENDO O ABISMO: ADAMV (C++ FUSED) ---")
+    model_adamv = AbyssMLP(input_dim=100, num_classes=2, depth=15)
     t0 = time.time()
-    loss_omega = train_abyss("TrueOmegaCpp", model_omega, dataloader, epochs=epochs, lr=lr_base)
+    loss_adamv = train_abyss("AdamVCpp", model_adamv, dataloader, epochs=epochs, lr=lr_base)
     print(f"-> Tempo total: {time.time()-t0:.2f}s")
     
     # Visualização
@@ -113,7 +112,7 @@ def run_abyss_arena():
     ax.set_facecolor('#11111b')
     
     plt.plot(range(1, epochs+1), loss_adam, label='AdamW (SOTA)', color='#f38ba8', lw=2, linestyle='--')
-    plt.plot(range(1, epochs+1), loss_omega, label='True Omega (C++ Fused)', color='#89b4fa', lw=3)
+    plt.plot(range(1, epochs+1), loss_adamv, label='AdamV (C++ Fused)', color='#89b4fa', lw=3)
     
     plt.title('A Arena do Abismo: Sobrevivência em Topologias Extremas', color='#cdd6f4', fontsize=14)
     plt.xlabel('Épocas', color='#cdd6f4')
