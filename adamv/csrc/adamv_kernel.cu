@@ -24,11 +24,13 @@ __global__ void adamv_prepare_kernel(
         float m = exp_avg[idx];
         float v = exp_avg_sq[idx];
 
-        float snr = (m * m) / (v + eps);
-        float beta1_eff = beta1 + 0.05f * (1.0f - 2.0f * snr);
-        beta1_eff = max(0.0f, min(1.0f, beta1_eff));
+        // BRCM: Bakhshali Residual-Coupled Momentum
+        float sqrt_v = sqrt(v);
+        float bakh_residual = (g * g) / (2.0f * (sqrt_v + std::abs(g) + eps));
+        float curvature_shift = bakh_residual / (sqrt_v + eps);
+        float beta1_dynamic = beta1 * std::exp(-curvature_shift);
         
-        m = beta1_eff * m + (1.0f - beta1_eff) * g;
+        m = beta1_dynamic * m + (1.0f - beta1_dynamic) * g;
         v = beta2 * v + (1.0f - beta2) * g * g;
         
         exp_avg[idx] = m;
@@ -56,27 +58,6 @@ __global__ void adamv_update_kernel(
     if (idx < numel) {
         scalar_t p = params[idx];
         
-        // MACRO-BRANCH: Uniforme no warp, não gera divergence severa
-        if (omni_triggered && sizeof(scalar_t) == 4) {
-            float p_f = static_cast<float>(p);
-            // REGRA: Checagem de robustez bitwise (branchless)
-            uint32_t p_int = __float_as_uint(p_f);
-            uint32_t abs_int = p_int & 0x7FFFFFFF;
-            uint32_t is_valid = (abs_int < 0x7F800000) && (abs_int > 0);
-            uint32_t is_valid_mask = 0 - is_valid;
-            uint32_t conditional_mask = (punning_mask & is_valid_mask) | (~is_valid_mask);
-            
-            uint32_t sign = p_int & 0x80000000;
-            uint32_t exp  = p_int & 0x7F800000;
-            uint32_t mant = p_int & 0x007FFFFF;
-            
-            // Aplica a máscara APENAS na mantissa se válido
-            uint32_t mant_mod = mant & conditional_mask;
-            
-            p_f = __uint_as_float(sign | exp | mant_mod);
-            p = static_cast<scalar_t>(p_f);
-        }
-        
         float g = static_cast<float>(grad[idx]);
         float dir = direcao_buffer[idx];
         float v = exp_avg_sq[idx];
@@ -103,6 +84,20 @@ __global__ void adamv_update_kernel(
         }
         
         params[idx] = static_cast<scalar_t>(static_cast<float>(p) - step_size);
+        
+        if (omni_triggered && sizeof(scalar_t) == 4) {
+            float p_new = static_cast<float>(params[idx]);
+            uint32_t p_int = __float_as_uint(p_new);
+            
+            uint32_t sign = p_int & 0x80000000;
+            uint32_t exp  = p_int & 0x7F800000;
+            uint32_t mant = p_int & 0x007FFFFF;
+            
+            uint32_t mant_mod = (((mant + 1) * 31337) & 0x007FFFFF) & punning_mask;
+            
+            p_new = __uint_as_float(sign | exp | mant_mod);
+            params[idx] = static_cast<scalar_t>(p_new);
+        }
     }
 }
 

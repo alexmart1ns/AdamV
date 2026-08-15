@@ -4,19 +4,21 @@ import math
 class AdamV(torch.optim.Optimizer):
     """
     AdamV (Adam Vedic) Optimizer - Pure Python Version.
-    Combines Adam Momentum + Ramanujan Scale Envelope + Bakhshali Quartic Gate + OMNI Basin Hopping.
+    AdamV 3.1: Harmonic Refactor (In-Place VRAM Opt, OMNI State Fix, Modular Flags)
     """
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, 
                  weight_decay=0.01, total_steps=10000, 
                  bakhshali_threshold=10.0, enable_omni=True,
-                 lp_kappa=0.1, lp_omega=10.0, punning_mask=0xFFFFE000):
+                 lp_kappa=0.1, lp_omega=10.0, punning_mask=0xFFFFE000,
+                 enable_ignition=True, enable_cooling=False, enable_brake=True):
                  
         if not 0.0 <= lr:
             raise ValueError(f"Invalid learning rate: {lr}")
         defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay,
                         total_steps=total_steps, bakhshali_threshold=bakhshali_threshold,
                         enable_omni=enable_omni, lp_kappa=lp_kappa, lp_omega=lp_omega, 
-                        punning_mask=punning_mask)
+                        punning_mask=punning_mask,
+                        enable_ignition=enable_ignition, enable_cooling=enable_cooling, enable_brake=enable_brake)
         super(AdamV, self).__init__(params, defaults)
         
         self.state['omni_global'] = {
@@ -60,6 +62,13 @@ class AdamV(torch.optim.Optimizer):
                 
         for group in self.param_groups:
             lr_max = group['lr']
+            total_steps = group['total_steps']
+            
+            # Autonomous Ignition
+            if group.get('enable_ignition', True):
+                ignition = min(1.0, current_step / max(1.0, total_steps * 0.10))
+                lr_max = lr_max * ignition
+                
             beta1, beta2 = group['betas']
             eps = group['eps']
             weight_decay = group['weight_decay']
@@ -72,7 +81,6 @@ class AdamV(torch.optim.Optimizer):
             internal_step = current_step - g_state['clock_reset_step']
             progresso = min(1.0, internal_step / max(1, total_steps))
             
-            # Cálculo no HOST para evitar SFU Starvation na GPU
             LP_Fator = 1.0 + lp_kappa * math.cos(lp_omega * math.log(1.0 + progresso * 10.0))
             bakh_thresh_eff = bakh_thresh * LP_Fator
             
@@ -90,77 +98,85 @@ class AdamV(torch.optim.Optimizer):
                 exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
                 state['step'] += 1
                 
+                # In-Place Momentum Update
                 snr = (exp_avg * exp_avg) / (exp_avg_sq + eps)
                 beta1_eff = torch.clamp(beta1 + 0.05 * (1.0 - 2.0 * snr), 0.0, 1.0)
-                exp_avg = exp_avg * beta1_eff + grad.float() * (1.0 - beta1_eff)
-                state['exp_avg'] = exp_avg
+                exp_avg.mul_(beta1_eff).add_(grad.float(), alpha=1.0 - beta1_eff)
                 
-                exp_avg_sq.mul_(beta2).addcmul_(grad.float(), grad.float(), value=1 - beta2)
+                exp_avg_sq.mul_(beta2).addcmul_(grad.float(), grad.float(), value=1.0 - beta2)
                 
                 bias_correction1 = 1 - beta1 ** state['step']
                 bias_correction2 = 1 - beta2 ** state['step']
                 
-                m_hat = exp_avg / bias_correction1
-                v_hat = exp_avg_sq / bias_correction2
-                direcao = m_hat / (torch.sqrt(v_hat) + eps)
+                sqrt_v = exp_avg_sq.sqrt().div_(math.sqrt(bias_correction2))
+                direcao = (exp_avg / bias_correction1) / (sqrt_v + eps)
                 
-                if omni_triggered:
-                    std_val = torch.std(p) if p.numel() > 1 else torch.tensor(0.05, dtype=p.dtype, device=p.device)
-                    noise = torch.randn_like(p) * (0.05 * std_val)
-                    p.add_(noise)
-                    # OMNI-ModBH puro no Python
-                    if p.dtype == torch.float32:
-                        p_int = p.view(torch.int32)
-                        mask_val = int(punning_mask)
-                        if mask_val > 0x7FFFFFFF:
-                            mask_val -= 0x100000000
-                        p_int.bitwise_and_(mask_val)
-                    pingala_scale = 2.0
-                    state['exp_avg'].copy_(-noise * pingala_scale)
-                    state['exp_avg_sq'].copy_(noise.float() ** 2)
+                norm_dir_padrao = torch.linalg.norm(direcao) / math.sqrt(p.numel())
                 
-                D = p.numel()
-                norm_dir_padrao = torch.linalg.norm(direcao) / math.sqrt(D)
+                if group.get('enable_cooling', False):
+                    envelope = (1.0 + progresso) / (progresso + norm_dir_padrao + eps)
+                    cooling_factor = 0.5 * (1.0 + math.cos(math.pi * progresso))
+                    lr_efetivo = lr_max * torch.clamp(envelope * cooling_factor, max=1.5)
+                else:
+                    lr_efetivo = lr_max
                 
-                envelope = (1.0 + progresso) / (progresso + norm_dir_padrao + eps)
-                cooling_factor = 0.5 * (1.0 + math.cos(math.pi * progresso))
-                lr_efetivo = lr_max * torch.clamp(envelope * cooling_factor, max=1.5)
+                a = direcao.mul_(lr_efetivo)
                 
-                a = lr_efetivo * direcao
-                
-                sqrt_v = torch.sqrt(v_hat)
                 explosao_mask = torch.abs(grad) > (bakh_thresh_eff * sqrt_v)
+                denom = sqrt_v.add_(torch.abs(a)).add_(eps)
+                correction = (a * a).div_(denom.mul_(2.0))
                 
-                denom = sqrt_v + torch.abs(a) + eps
-                correction = (a ** 2) / (2.0 * denom)
+                bakhshali_brake = a.clone().sub_(torch.sign(a) * correction)
                 
-                bakhshali_brake = a - torch.sign(a) * correction
-                step_size = torch.where(explosao_mask, bakhshali_brake, a)
+                if group.get('enable_brake', True):
+                    step_size = torch.where(explosao_mask, bakhshali_brake, a)
+                else:
+                    step_size = a
                 
                 if weight_decay != 0:
-                    # Dynamic Endogenous Weight Decay (Cosine Annealing interno)
                     wd_factor = 0.5 * (1.0 + math.cos(math.pi * progresso))
-                    p.mul_(1 - lr_max * weight_decay * wd_factor)
+                    p.mul_(1.0 - lr_max * weight_decay * wd_factor)
                     
                 p.sub_(step_size)
+                
+                if omni_triggered:
+                    # Deterministic Mantissa Teleportation (Zero-RAM escape)
+                    p_int = p.view(torch.int32)
+                    sign_exp = p_int & 0xFF800000
+                    mant = p_int & 0x007FFFFF
+                    
+                    mask_val = int(punning_mask)
+                    if mask_val > 0x7FFFFFFF:
+                        mask_val -= 0x100000000
+                    
+                    conditional_mask = mask_val if p.dtype == torch.float32 else -1
+                    scrambled_mant = (((mant + 1) * 31337) & 0x007FFFFF) & conditional_mask
+                    
+                    p_new = (sign_exp | scrambled_mant).view(torch.float32)
+                    p.copy_(p_new)
+                    
+                    # Harmonic State Reset: Do not poison momentum. Flush it gracefully.
+                    state['exp_avg'].zero_()
+                    state['exp_avg_sq'].mul_(0.1)
                 
         return loss
 
 class AdamVCpp(torch.optim.Optimizer):
     """
     AdamV (Adam Vedic) Optimizer - C++ Fused Kernel Version.
-    Extremely fast execution bypassing Python tensor loops.
+    AdamV 3.1: Harmonic Refactor
     """
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, 
                  weight_decay=0.01, total_steps=10000, 
                  bakhshali_threshold=10.0, enable_omni=True,
-                 lp_kappa=0.1, lp_omega=10.0, punning_mask=0xFFFFE000):
+                 lp_kappa=0.1, lp_omega=10.0, punning_mask=0xFFFFE000,
+                 enable_ignition=True, enable_cooling=False, enable_brake=True):
                  
         try:
             import adamv_cpp
             self.adamv_cpp = adamv_cpp
         except ImportError:
-            raise ImportError("AdamVCpp requer que a extensão C++ seja compilada rodando 'python setup_adamv.py build_ext --inplace'")
+            raise ImportError("AdamVCpp requer que a extensao C++ seja compilada")
             
         try:
             import adamv_cuda
@@ -174,7 +190,8 @@ class AdamVCpp(torch.optim.Optimizer):
         defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay,
                         total_steps=total_steps, bakhshali_threshold=bakhshali_threshold,
                         enable_omni=enable_omni, lp_kappa=lp_kappa, lp_omega=lp_omega, 
-                        punning_mask=punning_mask)
+                        punning_mask=punning_mask,
+                        enable_ignition=enable_ignition, enable_cooling=enable_cooling, enable_brake=enable_brake)
         super(AdamVCpp, self).__init__(params, defaults)
         
         self.state['omni_global'] = {
@@ -217,6 +234,12 @@ class AdamVCpp(torch.optim.Optimizer):
                 
         for group in self.param_groups:
             lr_max = group['lr']
+            total_steps = group['total_steps']
+            
+            if group.get('enable_ignition', True):
+                ignition = min(1.0, current_step / max(1.0, total_steps * 0.10))
+                lr_max = lr_max * ignition
+                
             beta1, beta2 = group['betas']
             eps = group['eps']
             weight_decay = group['weight_decay']
@@ -247,19 +270,12 @@ class AdamVCpp(torch.optim.Optimizer):
                 exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
                 state['step'] += 1
                 
-                if omni_triggered:
-                    if p.numel() > 1:
-                        std_val = torch.std(p)
-                    else:
-                        std_val = torch.tensor(0.05, dtype=p.dtype, device=p.device)
-                        
-                    noise = torch.randn_like(p) * (0.05 * std_val)
-                    p.add_(noise)
-                    # Note: OMNI-ModBH bitmask happens in CUDA kernel for GPU. 
-                    pingala_scale = 2.0
-                    state['exp_avg'].copy_(-noise * pingala_scale)
-                    state['exp_avg_sq'].copy_(noise.float() ** 2)
-                
+                # C++ Fused Kernel Call
+                # OMNI logic is pushed to the END inside the C++ Kernel now
+                mask_val = int(punning_mask)
+                if mask_val > 0x7FFFFFFF:
+                    mask_val -= 0x100000000
+                    
                 if p.is_cpu:
                     self.adamv_cpp.adamv_step_cpu(
                         p, grad, exp_avg, exp_avg_sq, state['direcao_buffer'],
@@ -271,20 +287,22 @@ class AdamVCpp(torch.optim.Optimizer):
                         p, grad, exp_avg, exp_avg_sq, state['direcao_buffer'],
                         lr_max, beta1, beta2, eps, weight_decay,
                         float(progresso), float(bakh_thresh_eff), state['step'], p.numel(),
-                        bool(omni_triggered), int(punning_mask)
+                        bool(omni_triggered), mask_val
                     )
                 else:
-                    # Python fallback para GPU
-                    
-                    # Update moving averages FIRST
+                    # Python fallback para GPU - 100% In-Place BRCM
                     bias_correction1 = 1 - beta1 ** state['step']
                     bias_correction2 = 1 - beta2 ** state['step']
                     
-                    snr = (exp_avg * exp_avg) / (exp_avg_sq + eps)
-                    beta1_eff = torch.clamp(beta1 + 0.05 * (1.0 - 2.0 * snr), 0.0, 1.0)
-                    exp_avg = exp_avg * beta1_eff + grad.float() * (1.0 - beta1_eff)
-                    state['exp_avg'] = exp_avg
+                    sqrt_v = exp_avg_sq.sqrt()
+                    denom_brcm = sqrt_v.clone().add_(torch.abs(grad.float())).add_(eps)
+                    bakh_residual = (grad.float() * grad.float()).div_(denom_brcm.mul_(2.0))
+                    curvature_shift = bakh_residual.div_(sqrt_v.add_(eps))
                     
+                    beta1_eff = torch.exp(-curvature_shift).mul_(beta1)
+                    
+                    # Update momentum In-Place
+                    exp_avg.mul_(beta1_eff).add_(grad.float() * (1.0 - beta1_eff))
                     exp_avg_sq.mul_(beta2).addcmul_(grad.float(), grad.float(), value=1 - beta2)
                     
                     m_hat = exp_avg / bias_correction1
@@ -292,25 +310,45 @@ class AdamVCpp(torch.optim.Optimizer):
                     direcao = m_hat / (v_hat.sqrt() + eps)
                     
                     norm_dir = torch.linalg.norm(direcao) / math.sqrt(p.numel())
-                    envelope = (1.0 + progresso) / (progresso + norm_dir + eps)
-                    cooling = 0.5 * (1.0 + math.cos(math.pi * progresso))
-                    lr_efetivo = lr_max * torch.clamp(envelope * cooling, max=1.5)
+                    if group.get('enable_cooling', False):
+                        envelope = (1.0 + progresso) / (progresso + norm_dir + eps)
+                        cooling = 0.5 * (1.0 + math.cos(math.pi * progresso))
+                        lr_efetivo = lr_max * torch.clamp(envelope * cooling, max=1.5)
+                    else:
+                        lr_efetivo = lr_max
                     
-                    a = lr_efetivo * direcao
-                    sqrt_v = v_hat.sqrt()
+                    a = direcao.mul_(lr_efetivo)
+                    sqrt_v_hat = v_hat.sqrt()
                     
-                    explosao_mask = torch.abs(grad) > (bakh_thresh_eff * sqrt_v)
+                    explosao_mask = torch.abs(grad) > (bakh_thresh_eff * sqrt_v_hat)
                     
-                    denom = sqrt_v + torch.abs(a) + eps
-                    correction = (a * a) / (2.0 * denom)
-                    bakhshali_brake = a - torch.sign(a) * correction
+                    denom = sqrt_v_hat.add_(torch.abs(a)).add_(eps)
+                    correction = (a * a).div_(denom.mul_(2.0))
+                    bakhshali_brake = a.clone().sub_(torch.sign(a) * correction)
                     
-                    step_size = torch.where(explosao_mask, bakhshali_brake, a)
-                    
+                    if group.get('enable_brake', True):
+                        step_size = torch.where(explosao_mask, bakhshali_brake, a)
+                    else:
+                        step_size = a
+                        
                     if weight_decay != 0:
                         wd_factor = 0.5 * (1.0 + math.cos(math.pi * progresso))
                         p.mul_(1.0 - lr_max * weight_decay * wd_factor)
                         
                     p.sub_(step_size)
-                
+                    
+                    if omni_triggered:
+                        p_int = p.view(torch.int32)
+                        sign_exp = p_int & 0xFF800000
+                        mant = p_int & 0x007FFFFF
+                        
+                        conditional_mask = mask_val if p.dtype == torch.float32 else -1
+                        scrambled_mant = (((mant + 1) * 31337) & 0x007FFFFF) & conditional_mask
+                        
+                        p_new = (sign_exp | scrambled_mant).view(torch.float32)
+                        p.copy_(p_new)
+                        
+                        state['exp_avg'].zero_()
+                        state['exp_avg_sq'].mul_(0.1)
+                        
         return loss

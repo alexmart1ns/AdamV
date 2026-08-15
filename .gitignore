@@ -2,3 +2,6 @@
 
 /__pycache__
 /data
+*.pyd
+*.so
+*.egg-info/
