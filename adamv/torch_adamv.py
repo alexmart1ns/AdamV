@@ -280,13 +280,18 @@ class AdamVCpp(torch.optim.Optimizer):
                     self.adamv_cpp.adamv_step_cpu(
                         p, grad, exp_avg, exp_avg_sq, state['direcao_buffer'],
                         lr_max, beta1, beta2, eps, weight_decay,
-                        float(progresso), float(bakh_thresh_eff), state['step'], p.numel()
+                        float(progresso), float(bakh_thresh_eff), state['step'], p.numel(),
+                        bool(group.get('enable_cooling', True)),
+                        bool(group.get('enable_brake', True)),
+                        bool(omni_triggered), mask_val
                     )
                 elif p.is_cuda and self.adamv_cuda is not None and hasattr(self.adamv_cuda, 'adamv_step_cuda'):
                     self.adamv_cuda.adamv_step_cuda(
                         p, grad, exp_avg, exp_avg_sq, state['direcao_buffer'],
                         lr_max, beta1, beta2, eps, weight_decay,
                         float(progresso), float(bakh_thresh_eff), state['step'], p.numel(),
+                        bool(group.get('enable_cooling', True)),
+                        bool(group.get('enable_brake', True)),
                         bool(omni_triggered), mask_val
                     )
                 else:

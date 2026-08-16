@@ -26,9 +26,10 @@ void adamv_step_cpu_template(
     float progresso,
     float bakh_thresh,
     int step,
-    int D)
+    int D,
+    bool enable_cooling,
+    bool enable_brake)
 {
-    float bias_correction1 = 1.0f - std::pow(beta1, static_cast<float>(step));
     float bias_correction2 = 1.0f - std::pow(beta2, static_cast<float>(step));
     
     auto p_acc = p.data_ptr<scalar_t>();
@@ -47,20 +48,25 @@ void adamv_step_cpu_template(
         float m = exp_avg_acc[i];
         float v = exp_avg_sq_acc[i];
         
-        float snr = (m * m) / (v + eps);
-        float beta1_eff = beta1 + 0.05f * (1.0f - 2.0f * snr);
-        beta1_eff = std::max(0.0f, std::min(1.0f, beta1_eff));
-        
-        m = beta1_eff * m + (1.0f - beta1_eff) * g;
         v = v * beta2 + (1.0f - beta2) * (g * g);
-        
-        exp_avg_acc[i] = m;
         exp_avg_sq_acc[i] = v;
         
-        float m_hat = m / bias_correction1;
         float v_hat = v / bias_correction2;
+        float sqrt_v_hat = std::sqrt(v_hat);
         
-        float dir = m_hat / (std::sqrt(v_hat) + eps);
+        // BRCM: Excess Shock Isolator (delta)
+        float delta = std::max(0.0f, std::abs(g) - sqrt_v_hat);
+        float denom_brcm = sqrt_v_hat + delta + eps;
+        float bakh_residual = (delta * delta) / (2.0f * denom_brcm);
+        float curvature_shift = bakh_residual / (sqrt_v_hat + eps);
+        float beta1_eff = beta1 * std::exp(-curvature_shift);
+        
+        float bias_correction1_dynamic = 1.0f - std::pow(beta1_eff, static_cast<float>(step));
+        
+        m = beta1_eff * m + (1.0f - beta1_eff) * g;
+        exp_avg_acc[i] = m;
+        
+        float dir = (m / bias_correction1_dynamic) / (sqrt_v_hat + eps);
         direcao_acc[i] = dir;
         norm_dir_sq += static_cast<double>(dir * dir);
     }
@@ -68,9 +74,18 @@ void adamv_step_cpu_template(
     float norm_dir = std::sqrt(static_cast<float>(norm_dir_sq));
     float norm_dir_padrao = norm_dir / std::sqrt(static_cast<float>(D));
     
-    float envelope = (1.0f + progresso) / (progresso + norm_dir_padrao + eps);
-    float cooling_factor = 0.5f * (1.0f + std::cos(static_cast<float>(M_PI) * progresso));
-    float lr_efetivo = lr * std::min(envelope * cooling_factor, 1.5f);
+    float lr_efetivo = lr;
+    if (enable_cooling) {
+        float envelope = (1.0f + progresso) / (progresso + norm_dir_padrao + eps);
+        float cooling_factor;
+        if (progresso < 0.1f) {
+            cooling_factor = 0.01f + (progresso / 0.1f) * 0.99f;
+        } else {
+            float cos_progresso = (progresso - 0.1f) / 0.9f;
+            cooling_factor = 1.0f;
+        }
+        lr_efetivo = lr * std::min(envelope * cooling_factor, 1.5f);
+    }
     
     #pragma omp parallel for
     for (int i = 0; i < numel; ++i) {
@@ -81,15 +96,31 @@ void adamv_step_cpu_template(
         
         float w_val = static_cast<float>(p_acc[i]);
         
-        bool explosao = std::abs(g) > (bakh_thresh * std::sqrt(v_hat));
         float step_size = a;
         
-        if (explosao) {
-            float denom = std::sqrt(v_hat) + std::abs(a) + eps;
-            float correction = (a * a) / (2.0f * denom);
-            float sign_a = std::copysign(1.0f, a);
-            step_size = a - sign_a * correction;
+        if (enable_brake) {
+            bool explosao = std::abs(g) > (bakh_thresh * std::sqrt(v_hat));
+            if (explosao) {
+                // Dimensional Mismatch Fix: parameter absolute magnitude
+                float denom = std::abs(w_val) + (std::abs(a) * 2.0f) + eps;
+                float correction = (a * a) / (2.0f * denom);
+                float sign_a = std::copysign(1.0f, a);
+                step_size = a - sign_a * correction;
+            }
         }
+        
+        // Orthogonal Truncated Levy Flight Injection
+        uint32_t seed = (static_cast<uint32_t>(step) * 31337) ^ static_cast<uint32_t>(i);
+        seed = (seed * 1664525) + 1013904223;
+        float u = (static_cast<float>(seed) / 4294967296.0f) * 0.999f + 0.0005f;
+        float cauchy = std::tan(static_cast<float>(M_PI) * (u - 0.5f));
+        cauchy = std::max(-100.0f, std::min(100.0f, cauchy));
+        float sqrt_v_local = std::sqrt(v_hat);
+        float levy_scale = sqrt_v_local / (sqrt_v_local + 1.0f);
+        float levy_mult = 0.001f * std::max(0.0f, 1.0f - progresso);
+        float levy_jump = lr_efetivo * levy_mult * cauchy * levy_scale;
+        
+        step_size -= levy_jump;
         
         if (weight_decay != 0.0f) {
             float wd_factor = 0.5f * (1.0f + std::cos(static_cast<float>(M_PI) * progresso));
@@ -115,7 +146,9 @@ void adamv_step_cpu(
     float progresso,
     float bakh_thresh,
     int step,
-    int D) 
+    int D,
+    bool enable_cooling,
+    bool enable_brake) 
 {
     CHECK_INPUT(p);
     CHECK_INPUT(grad);
@@ -126,7 +159,7 @@ void adamv_step_cpu(
     AT_DISPATCH_FLOATING_TYPES(p.scalar_type(), "adamv_step_cpu", ([&] {
         adamv_step_cpu_template<scalar_t>(
             p, grad, exp_avg, exp_avg_sq, direcao,
-            lr, beta1, beta2, eps, weight_decay, progresso, bakh_thresh, step, D);
+            lr, beta1, beta2, eps, weight_decay, progresso, bakh_thresh, step, D, enable_cooling, enable_brake);
     }));
 }
 
@@ -134,7 +167,7 @@ void adamv_step_cpu(
 void adamv_step_cuda(
     at::Tensor p, at::Tensor grad, at::Tensor exp_avg, at::Tensor exp_avg_sq, at::Tensor direcao,
     float lr, float beta1, float beta2, float eps, float weight_decay, float progresso,
-    float bakh_thresh_eff, int step, int D, bool omni_triggered, int64_t punning_mask);
+    float bakh_thresh_eff, int step, int D, bool enable_cooling, bool enable_brake, bool omni_triggered, int64_t punning_mask);
 #endif
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
