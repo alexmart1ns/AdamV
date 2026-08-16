@@ -97,12 +97,23 @@ for epoch in range(15):
         optimizer.step(loss=loss)
 ```
 
-## 🧪 基准测试
-运行包含的 100% 中立的、多随机种子的统计验证套件，以便在您的机器上直接对比 AdamV 和 AdamW。它在具有 p 值验证的 ResNet-18、VAE 和 NanoGPT 上运行 5 个种子。
+## 🧪 基准测试与验证指南
 
+我们坚信**开放科学和可重复的结果**。您不必只听我们的片面之词——您可以运行完整的、100% 中立的、多随机种子统计验证套件，在您自己的机器上对 AdamV 和 AdamW 进行基准测试。
+
+该套件在三种不同的架构上跨 5 个独立的随机种子测试这两种优化器：
+- **ResNet-18** (确定性图像分类)
+- **VAE** (随机生成噪声)
+- **NanoGPT** (深度自回归注意力)
+
+### 如何重现结果：
+1. **硬件要求**：强烈建议使用具有至少 15GB VRAM 的支持 CUDA 的 GPU (例如，NVIDIA T4、RTX 3090，或标准的免费 Kaggle GPU 实例)。
+2. **运行全球压力套件**：
 ```bash
 python benchmarks/run_global_stress_suite.py
 ```
+3. **预期情况**：该脚本将自动下载数据集 (FashionMNIST、TinyShakespeare)，编译 AdamV C++ 内核，并运行所有 30 种组合 (5 个种子 × 3 个场景 × 2 种优化器)。在标准的 NVIDIA T4 GPU 上，此过程大约需要 1.5 小时。
+4. **输出**：完成后，脚本将自动生成包含原始指标的 `global_stress_results.csv` 文件以及展示最小-最大方差阴影和韦尔奇 t 检验 p 值的 `global_stress_plot.png`。
 
 ![Global Stress Test Results](assets/global_stress_results.png)
 

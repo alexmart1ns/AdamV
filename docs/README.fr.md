@@ -97,12 +97,23 @@ for epoch in range(15):
         optimizer.step(loss=loss)
 ```
 
-## 🧪 Benchmarks
-Exécutez la suite de validation statistique multi-graines incluse, 100% neutre, pour comparer directement AdamV à AdamW sur votre machine. Elle exécute 5 graines sur ResNet-18, VAE et NanoGPT avec validation de la valeur p.
+## 🧪 Benchmarks & Guide de Validation
 
+Nous croyons en **la science ouverte et aux résultats reproductibles**. Vous n'avez pas à nous croire sur parole—vous pouvez exécuter l'intégralité de la suite de validation statistique multi-graines 100% neutre pour comparer AdamV à AdamW sur votre propre machine.
+
+La suite teste les deux optimiseurs sur 5 graines aléatoires indépendantes sur trois architectures distinctes :
+- **ResNet-18** (Classification d'Images Déterministe)
+- **VAE** (Bruit Génératif Stochastique)
+- **NanoGPT** (Attention Autorégressive Profonde)
+
+### Comment reproduire les résultats :
+1. **Exigences Matérielles** : Un GPU compatible CUDA avec au moins 15 Go de VRAM est fortement recommandé (par ex., NVIDIA T4, RTX 3090, ou une instance GPU gratuite standard sur Kaggle).
+2. **Exécuter la Global Stress Suite** :
 ```bash
 python benchmarks/run_global_stress_suite.py
 ```
+3. **À quoi s'attendre** : Le script téléchargera automatiquement les ensembles de données (FashionMNIST, TinyShakespeare), compilera les noyaux C++ d'AdamV, et exécutera toutes les 30 combinaisons (5 Graines × 3 Scénarios × 2 Optimiseurs). Sur un GPU NVIDIA T4 standard, ce processus prend environ ~1,5 heures.
+4. **Sorties** : Une fois terminé, le script générera automatiquement un fichier `global_stress_results.csv` avec les métriques brutes et un fichier `global_stress_plot.png` montrant l'ombrage de variance Min-Max et les valeurs p du test t de Welch.
 
 ![Global Stress Test Results](assets/global_stress_results.png)
 
