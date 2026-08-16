@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.2-alpha] - 2026-08-16
+### Added
+- **Global Stress Suite**: Added `run_global_stress_suite.py`, a 100% neutral, multi-seed statistical validation suite running 5 seeds across ResNet-18, VAE, and NanoGPT with p-value validation.
+### Changed
+- **Performance Breakthrough**: AdamV 2.0.2 alpha massively outperformed AdamW on NanoGPT.
+- **Documentation**: Completely rewrote the README to highlight AdamV 2.0.2 alpha, C++/CUDA implementation, the Bakhshali Root, BRCM geometric momentum brakes, and Log-Periodic Cooling.
+
 ## [2.0.1] - 2026-08-15
 ### Added
 - **Bakhshali Residual-Coupled Momentum (BRCM)**: Introduced a dynamic curvature-aware momentum decay that stabilizes training in tight topological ravines by scaling $\beta_1$ exponentially based on residual collision force.
