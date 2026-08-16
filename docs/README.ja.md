@@ -36,6 +36,39 @@ cd AdamV
 pip install -e .
 ```
 
+## 🎛️ キャリブレーションガイド (シナリオ別)
+
+AdamV は高度な自己制御機能を備えていますが、異なるニューラルネットワークアーキテクチャは根本的に異なる数学的位相幾何学を持っているため、モデルに応じて AdamV を正しく初期化する必要があります。
+
+### 1. ビジョン & NLP (決定的 & ディープアテンション)
+標準モデル（**ResNet** など）や自己回帰モデル（**NanoGPT** など）の場合は、**ゴールデンキャリブレーション (Golden Calibration)** を使用してください。これは3世紀のバクシャーリー平方根と幾何学的モメンタムブレーキを活用して、勾配爆発を自動的に停止させます。
+
+```python
+# The Golden Calibration (Default)
+optimizer = AdamVCpp(
+    model.parameters(),
+    lr=1e-3,            # Flat Learning Rate (No Schedulers Needed!)
+    betas=(0.9, 0.999),
+    weight_decay=0.1
+    # Hidden defaults: use_bakhshali=True, bakhshali_threshold=50.0, enable_brcm=True
+)
+```
+
+### 2. 生成モデル (VAE, GANs, 拡散モデル)
+生成モデルは本来、勾配に**ガウスノイズ**を注入します。このノイズは、AdamV のモメンタムブレーキとの誤検知（フォールスポジティブ）の衝突を引き起こします。これらのモデルの場合は、**確率的キャリブレーション (Stochastic Calibration)** を使用してください。
+
+```python
+# The Stochastic Calibration
+optimizer = AdamVCpp(
+    model.parameters(),
+    lr=1e-3,
+    betas=(0.9, 0.999),
+    weight_decay=0.0,
+    enable_brcm=False,             # Turn OFF Geometric Brakes (let noise flow)
+    bakhshali_threshold=1000.0     # Expand the shock tolerance for noise
+)
+```
+
 ## 🚀 使い方
 
 `AdamVCpp` の使用は、PyTorchのトレーニングループに組み込むだけで非常に簡単です。

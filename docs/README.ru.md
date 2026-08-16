@@ -36,6 +36,39 @@ cd AdamV
 pip install -e .
 ```
 
+## 🎛️ Руководство по калибровке (в зависимости от сценария)
+
+AdamV обладает высокой способностью к саморегуляции, но поскольку различные нейросетевые архитектуры имеют фундаментально разные математические топологии, вы должны правильно инициализировать AdamV в зависимости от вашей модели.
+
+### 1. Компьютерное зрение и NLP (детерминированные модели и глубокое внимание)
+Для стандартных моделей (таких как **ResNet**) и авторегрессионных моделей (таких как **NanoGPT**) используйте **Золотую калибровку (Golden Calibration)**. Она использует корень Бахшали 3-го века и геометрические импульсные тормоза для автоматической остановки взрыва градиентов.
+
+```python
+# The Golden Calibration (Default)
+optimizer = AdamVCpp(
+    model.parameters(),
+    lr=1e-3,            # Flat Learning Rate (No Schedulers Needed!)
+    betas=(0.9, 0.999),
+    weight_decay=0.1
+    # Hidden defaults: use_bakhshali=True, bakhshali_threshold=50.0, enable_brcm=True
+)
+```
+
+### 2. Генеративные модели (VAE, GAN, диффузионные модели)
+Генеративные модели естественным образом вносят **гауссовский шум** в градиенты. Этот шум вызывает ложноположительные столкновения с импульсными тормозами AdamV. Для этих моделей используйте **Стохастическую калибровку (Stochastic Calibration)**.
+
+```python
+# The Stochastic Calibration
+optimizer = AdamVCpp(
+    model.parameters(),
+    lr=1e-3,
+    betas=(0.9, 0.999),
+    weight_decay=0.0,
+    enable_brcm=False,             # Turn OFF Geometric Brakes (let noise flow)
+    bakhshali_threshold=1000.0     # Expand the shock tolerance for noise
+)
+```
+
 ## 🚀 Использование
 
 Использование `AdamVCpp` так же просто, как его добавление в цикл обучения PyTorch.

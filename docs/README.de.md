@@ -36,6 +36,39 @@ cd AdamV
 pip install -e .
 ```
 
+## 🎛️ Kalibrierungsleitfaden (Szenariospezifisch)
+
+AdamV ist stark selbstregulierend, aber da verschiedene neuronale Architekturen grundlegend unterschiedliche mathematische Topologien aufweisen, müssen Sie AdamV je nach Modell richtig initialisieren.
+
+### 1. Vision & NLP (Deterministisch & Deep Attention)
+Für Standardmodelle (wie **ResNet**) und autoregressive Modelle (wie **NanoGPT**) verwenden Sie die **Goldene Kalibrierung**. Diese nutzt die Bakhshali-Wurzel aus dem 3. Jahrhundert und geometrische Impulsbremsen, um Gradientenexplosionen automatisch zu stoppen.
+
+```python
+# The Golden Calibration (Default)
+optimizer = AdamVCpp(
+    model.parameters(),
+    lr=1e-3,            # Flat Learning Rate (No Schedulers Needed!)
+    betas=(0.9, 0.999),
+    weight_decay=0.1
+    # Hidden defaults: use_bakhshali=True, bakhshali_threshold=50.0, enable_brcm=True
+)
+```
+
+### 2. Generative Modelle (VAE, GANs, Diffusion)
+Generative Modelle injizieren von Natur aus **Gaußsches Rauschen** in die Gradienten. Dieses Rauschen verursacht falsch-positive Kollisionen mit den Impulsbremsen von AdamV. Verwenden Sie für diese Modelle die **Stochastische Kalibrierung**.
+
+```python
+# The Stochastic Calibration
+optimizer = AdamVCpp(
+    model.parameters(),
+    lr=1e-3,
+    betas=(0.9, 0.999),
+    weight_decay=0.0,
+    enable_brcm=False,             # Turn OFF Geometric Brakes (let noise flow)
+    bakhshali_threshold=1000.0     # Expand the shock tolerance for noise
+)
+```
+
 ## 🚀 Verwendung
 
 Die Verwendung von `AdamVCpp` ist so einfach wie das Einfügen in Ihre PyTorch-Trainingsschleife.

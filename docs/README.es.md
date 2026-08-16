@@ -36,6 +36,39 @@ cd AdamV
 pip install -e .
 ```
 
+## 🎛️ Guía de Calibración (Específica del Escenario)
+
+AdamV es altamente autorregulado, pero debido a que diferentes arquitecturas neuronales tienen topologías matemáticas fundamentalmente diferentes, debe inicializar AdamV correctamente según su modelo.
+
+### 1. Visión y PNL (Determinista y Atención Profunda)
+Para modelos estándar (como **ResNet**) y modelos autorregresivos (como **NanoGPT**), utilice la **Calibración Dorada** (Golden Calibration). Esto aprovecha la Raíz de Bakhshali del siglo III y los frenos de momento geométrico para detener las explosiones de gradiente automáticamente.
+
+```python
+# The Golden Calibration (Default)
+optimizer = AdamVCpp(
+    model.parameters(),
+    lr=1e-3,            # Flat Learning Rate (No Schedulers Needed!)
+    betas=(0.9, 0.999),
+    weight_decay=0.1
+    # Hidden defaults: use_bakhshali=True, bakhshali_threshold=50.0, enable_brcm=True
+)
+```
+
+### 2. Modelos Generativos (VAE, GANs, Difusión)
+Los modelos generativos inyectan de forma nativa **ruido Gaussiano** en los gradientes. Este ruido causa colisiones falsas positivas con los frenos de momento de AdamV. Para estos modelos, utilice la **Calibración Estocástica** (Stochastic Calibration).
+
+```python
+# The Stochastic Calibration
+optimizer = AdamVCpp(
+    model.parameters(),
+    lr=1e-3,
+    betas=(0.9, 0.999),
+    weight_decay=0.0,
+    enable_brcm=False,             # Turn OFF Geometric Brakes (let noise flow)
+    bakhshali_threshold=1000.0     # Expand the shock tolerance for noise
+)
+```
+
 ## 🚀 Uso
 
 Usar `AdamVCpp` es tan simple como integrarlo en su bucle de entrenamiento de PyTorch.

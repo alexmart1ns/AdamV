@@ -36,6 +36,39 @@ cd AdamV
 pip install -e .
 ```
 
+## 🎛️ 校准指南（特定场景）
+
+AdamV 具有高度的自我调节能力，但由于不同的神经架构具有根本不同的数学拓扑结构，因此您必须根据您的模型正确初始化 AdamV。
+
+### 1. 视觉与 NLP（确定性与深度注意力）
+对于标准模型（如 **ResNet**）和自回归模型（如 **NanoGPT**），请使用 **黄金校准 (Golden Calibration)**。这利用了 3 世纪的巴克沙利平方根和几何动量制动器来自动阻止梯度爆炸。
+
+```python
+# The Golden Calibration (Default)
+optimizer = AdamVCpp(
+    model.parameters(),
+    lr=1e-3,            # Flat Learning Rate (No Schedulers Needed!)
+    betas=(0.9, 0.999),
+    weight_decay=0.1
+    # Hidden defaults: use_bakhshali=True, bakhshali_threshold=50.0, enable_brcm=True
+)
+```
+
+### 2. 生成模型（VAE、GAN、扩散模型）
+生成模型会原生地将**高斯噪声**注入梯度中。这种噪声会导致与 AdamV 的动量制动器发生假阳性碰撞。对于这些模型，请使用 **随机校准 (Stochastic Calibration)**。
+
+```python
+# The Stochastic Calibration
+optimizer = AdamVCpp(
+    model.parameters(),
+    lr=1e-3,
+    betas=(0.9, 0.999),
+    weight_decay=0.0,
+    enable_brcm=False,             # Turn OFF Geometric Brakes (let noise flow)
+    bakhshali_threshold=1000.0     # Expand the shock tolerance for noise
+)
+```
+
 ## 🚀 用法
 
 使用 `AdamVCpp` 就像将它放入您的 PyTorch 训练循环一样简单。
