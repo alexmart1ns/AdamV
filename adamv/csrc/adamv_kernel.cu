@@ -16,7 +16,7 @@ __global__ void adamv_prepare_kernel(
     float* __restrict__ exp_avg,
     float* __restrict__ exp_avg_sq,
     float* __restrict__ direcao_buffer,
-    float beta1, float beta2, float bias_correction2, float eps, 
+    float beta1, float beta2, float bias_correction1, float bias_correction2, float eps, 
     int numel) {
     
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -42,7 +42,7 @@ __global__ void adamv_prepare_kernel(
         m = beta1_eff * m + (1.0f - beta1_eff) * g;
         exp_avg[idx] = m;
         
-        direcao_buffer[idx] = m / (sqrt_v_hat + eps);
+        direcao_buffer[idx] = (m / bias_correction1) / (sqrt_v_hat + eps);
     }
 }
 
@@ -149,6 +149,7 @@ void adamv_step_cuda(
     int numel = p.numel();
     int blocks = (numel + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
+    float bias_correction1 = 1.0f - std::pow(static_cast<float>(beta1), static_cast<float>(step));
     float bias_correction2 = 1.0f - std::pow(static_cast<float>(beta2), static_cast<float>(step));
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
@@ -159,7 +160,7 @@ void adamv_step_cuda(
             exp_avg.data_ptr<float>(),
             exp_avg_sq.data_ptr<float>(),
             direcao.data_ptr<float>(),
-            beta1, beta2, bias_correction2, eps, numel
+            beta1, beta2, bias_correction1, bias_correction2, eps, numel
         );
     });
 

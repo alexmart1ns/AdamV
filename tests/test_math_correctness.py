@@ -46,15 +46,17 @@ def test_camd_spike_gradient():
     model.weight.data.fill_(1.0)
     opt = AdamV(model.parameters(), lr=0.1, betas=(0.9, 0.999))
 
-    # Establish v with small grad
-    model.weight.grad = torch.tensor([[0.1]])
-    opt.step()
+    # Establish v with small grad over 1000 steps so bias_correction2 drops to 0.63
+    # This prevents the initial bias correction from artificially multiplying the spike's effect on v
+    for _ in range(1000):
+        model.weight.grad = torch.tensor([[0.1]])
+        opt.step()
 
     state = opt.state[model.weight]
     m_before = state['exp_avg'].clone()
 
     # Spike gradient
-    g_spike = 10.0
+    g_spike = 10000.0  # Massive spike needed now that v updates first
     model.weight.grad = torch.tensor([[g_spike]])
     opt.step()
 
@@ -151,13 +153,13 @@ def test_bakhshali_brake_reduces_step_size():
     # Warmup v so brake threshold can be exceeded
     model1 = setup_model()
     model1.weight.data.fill_(1.0)
-    opt1 = AdamV(model1.parameters(), lr=0.1, enable_brake=True)
+    opt1 = AdamV(model1.parameters(), lr=10.0, enable_brake=True)
 
     model2 = setup_model()
     model2.weight.data.fill_(1.0)
-    opt2 = AdamV(model2.parameters(), lr=0.1, enable_brake=False)
+    opt2 = AdamV(model2.parameters(), lr=10.0, enable_brake=False)
 
-    for _ in range(5):
+    for _ in range(1000):
         model1.weight.grad = torch.tensor([[0.01]])
         model2.weight.grad = torch.tensor([[0.01]])
         opt1.step()
@@ -165,8 +167,8 @@ def test_bakhshali_brake_reduces_step_size():
 
     model1.weight.data.fill_(1.0)
     model2.weight.data.fill_(1.0)
-    model1.weight.grad = torch.tensor([[1000.0]])
-    model2.weight.grad = torch.tensor([[1000.0]])
+    model1.weight.grad = torch.tensor([[100000.0]])
+    model2.weight.grad = torch.tensor([[100000.0]])
 
     opt1.step()
     opt2.step()

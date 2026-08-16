@@ -34,6 +34,7 @@ void adamv_step_cpu_template(
     bool omni_triggered,
     int mask_val)
 {
+    float bias_correction1 = 1.0f - std::pow(beta1, static_cast<float>(step));
     float bias_correction2 = 1.0f - std::pow(beta2, static_cast<float>(step));
     
     auto p_acc = p.data_ptr<scalar_t>();
@@ -87,7 +88,7 @@ void adamv_step_cpu_template(
         m = beta1_eff * m + (1.0f - beta1_eff) * g;
         exp_avg_acc[i] = m;
         
-        float dir = m / (sqrt_v_hat + eps);
+        float dir = (m / bias_correction1) / (sqrt_v_hat + eps);
         norm_dir_sq_new += static_cast<double>(dir * dir);
         
         float a = lr_efetivo * dir;

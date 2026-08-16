@@ -94,25 +94,30 @@ class AdamV(torch.optim.Optimizer):
                 exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
                 state['step'] += 1
                 
+                bias_correction1 = 1 - beta1 ** state['step']
                 bias_correction2 = 1 - beta2 ** state['step']
                 
+                # 1. Update v FIRST (so v_hat is not zero on step 1)
+                exp_avg_sq.mul_(beta2).addcmul_(grad.float(), grad.float(), value=1.0 - beta2)
+                
+                # 2. Compute stats
                 v_hat = exp_avg_sq / bias_correction2
                 sqrt_v_hat = v_hat.sqrt()
                 sqrt_v = exp_avg_sq.sqrt()
                 
-                # Curvature-Adaptive Momentum Decay (CAMD)
+                # 3. CAMD (Bakhshali Root)
                 delta = torch.clamp(torch.abs(grad.float()) - 1.5 * sqrt_v_hat, min=0.0)
                 denom_brcm = sqrt_v_hat.clone().add_(delta).add_(eps)
                 bakh_residual = (delta * delta).div_(denom_brcm.mul_(2.0))
-                curvature_shift = bakh_residual.div_(sqrt_v_hat.add(eps))
+                curvature_shift = bakh_residual.div_(sqrt_v_hat.clone().add_(eps))
                 
                 beta1_eff = torch.exp(-0.03 * curvature_shift).mul_(beta1)
                 
+                # 4. Update m SECOND
                 # alpha must be scalar; beta1_eff is per-element tensor, so use element-wise form
                 exp_avg.mul_(beta1_eff).add_(grad.float() * (1.0 - beta1_eff))
-                exp_avg_sq.mul_(beta2).addcmul_(grad.float(), grad.float(), value=1.0 - beta2)
                 
-                direcao = exp_avg / (sqrt_v_hat + eps)
+                direcao = (exp_avg / bias_correction1) / (sqrt_v_hat + eps)
                 
                 a = direcao.mul_(lr_max)
                 
@@ -282,23 +287,29 @@ class AdamVCpp(torch.optim.Optimizer):
                         bool(omni_triggered), mask_val
                     )
                 else:
+                    bias_correction1 = 1 - beta1 ** state['step']
                     bias_correction2 = 1 - beta2 ** state['step']
+                
+                    # 1. Update v FIRST
+                    exp_avg_sq.mul_(beta2).addcmul_(grad.float(), grad.float(), value=1.0 - beta2)
+                    
+                    # 2. Compute stats
                     v_hat = exp_avg_sq / bias_correction2
                     sqrt_v_hat = v_hat.sqrt()
                     sqrt_v = exp_avg_sq.sqrt()
                     
-                    # Curvature-Adaptive Momentum Decay (CAMD)
+                    # 3. CAMD
                     delta = torch.clamp(torch.abs(grad.float()) - 1.5 * sqrt_v_hat, min=0.0)
                     denom_brcm = sqrt_v_hat.clone().add_(delta).add_(eps)
                     bakh_residual = (delta * delta).div_(denom_brcm.mul_(2.0))
-                    curvature_shift = bakh_residual.div_(sqrt_v_hat.add(eps))
+                    curvature_shift = bakh_residual.div_(sqrt_v_hat.clone().add_(eps))
                     
                     beta1_eff = torch.exp(-0.03 * curvature_shift).mul_(beta1)
                     
+                    # 4. Update m SECOND
                     exp_avg.mul_(beta1_eff).add_(grad.float() * (1.0 - beta1_eff))
-                    exp_avg_sq.mul_(beta2).addcmul_(grad.float(), grad.float(), value=1 - beta2)
                     
-                    direcao = exp_avg / (sqrt_v_hat + eps)
+                    direcao = (exp_avg / bias_correction1) / (sqrt_v_hat + eps)
                     
                     a = direcao.mul_(lr_max)
                     

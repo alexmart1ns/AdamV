@@ -58,31 +58,28 @@ def test_bfloat16_parameters():
 
 def test_large_gradient():
     """Test 4: Very large gradient → Bakhshali Brake reduces step vs no-brake, no NaN/Inf"""
-    # Warmup v so brake threshold can be exceeded
     model1 = setup_model()
-    opt1 = AdamV(model1.parameters(), lr=1e-3, enable_brake=True)
+    opt1 = AdamV(model1.parameters(), lr=10.0, enable_brake=True)
     model2 = setup_model()
-    opt2 = AdamV(model2.parameters(), lr=1e-3, enable_brake=False)
+    opt2 = AdamV(model2.parameters(), lr=10.0, enable_brake=False)
 
-    for _ in range(10):
+    for _ in range(1000):
         for p in model1.parameters():
-            p.grad = torch.full_like(p, 0.5)
+            p.grad = torch.full_like(p, 0.01)
         for p in model2.parameters():
-            p.grad = torch.full_like(p, 0.5)
+            p.grad = torch.full_like(p, 0.01)
         opt1.step()
         opt2.step()
 
-    # Reset weights to same value, then spike
     for p1, p2 in zip(model1.parameters(), model2.parameters()):
         p1.data.copy_(p2.data)
 
     init_params = [p.clone() for p in model1.parameters()]
 
     for p in model1.parameters():
-        p.grad = torch.full_like(p, 1e6)
+        p.grad = torch.full_like(p, 100000.0)
     for p in model2.parameters():
-        p.grad = torch.full_like(p, 1e6)
-
+        p.grad = torch.full_like(p, 100000.0)
     opt1.step()
     opt2.step()
 
