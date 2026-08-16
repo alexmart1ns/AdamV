@@ -2,20 +2,20 @@
 
 ---
 
-# 🧠 AdamV 2.0.3: Geometrically Adaptive Optimizer
+# 🧠 AdamV 3.0.0: Geometrically Adaptive Optimizer
 
 ![AdamV vs AdamW Duel](assets/adamv_duel_banner.jpg)
 
-AdamV 2.0.3 is an optimization algorithm for PyTorch that incorporates numerical topology and geometric momentum adjustments. It utilizes a fused C++/CUDA implementation to optimize memory-bandwidth efficiency and includes native `BFloat16` support.
+AdamV 3.0.0 is an optimization algorithm for PyTorch that incorporates curvature-adaptive momentum decay and a fused C++/CUDA implementation for memory-bandwidth efficiency. It includes native `BFloat16` support.
 
-In our multi-seed benchmarking under flat learning rate conditions, AdamV demonstrates improved convergence characteristics compared to AdamW, as measured by Welch's t-test in the provided stress suite.
+In our multi-seed benchmarking under flat learning rate conditions, AdamV shows competitive convergence characteristics compared to AdamW, as measured by Welch's t-test in the provided stress suite.
 
-## ⚙️ The Pillars of AdamV 2.0.3
+## ⚙️ The Pillars of AdamV 3.0.0
 
 AdamV introduces the following architectural mechanisms:
 
-### 1. The Bakhshali Root & BRCM Geometric Momentum Brakes
-AdamV utilizes the ancient Bakhshali approximation method combined with Bakhshali Residual-Coupled Momentum (BRCM). By scaling the momentum decay ($\beta_1$) exponentially based on residual collision force ($\sqrt{v_t}$), the optimizer acts as a dynamic shock absorber. It applies geometric momentum brakes in tight topological ravines to restrain explosive gradients, while accelerating linearly on barren plateaus.
+### 1. Curvature-Adaptive Momentum Decay (CAMD)
+AdamV uses CAMD to dynamically scale the momentum decay coefficient ($\beta_1$) based on local gradient curvature. When the gradient magnitude significantly exceeds the running second-moment estimate ($\sqrt{v_t}$), the optimizer computes a residual collision term and attenuates $\beta_1$ exponentially (`beta1 × exp(-0.03 × curvature_shift)`). This reduces carried momentum in sharp minima and allows faster adaptation, while leaving momentum largely unchanged on flat regions.
 
 ### 2. Curvature-Driven Dynamic Inertia
 Instead of using a rigid momentum decay, AdamV calculates the local Signal-to-Noise Ratio. On flat plateaus, it drops inertia to accelerate immediately. In chaotic ravines, it increases inertia to ignore noise and stabilize descent.
@@ -23,8 +23,8 @@ Instead of using a rigid momentum decay, AdamV calculates the local Signal-to-No
 ### 3. Decoupled Architecture (Pure Optimizer)
 Unlike earlier experimental versions, AdamV 2.0.3 is a pure optimizer. It strips away hardcoded cooling envelopes and weight decay schedulers, ensuring 100% Drop-in Compatibility with HuggingFace Trainer and external PyTorch `LRScheduler` objects.
 
-### 4. Basin Hopping (Safe Mantissa Type-Punning & DDP)
-When AdamV detects a barren plateau, it triggers a Basin Hop. It applies bitwise masks directly to the IEEE 754 float32 mantissa to perturb the weights without allocating additional noise tensors. This technique is guarded at compile time via `if constexpr` and relies on an asynchronous `all_reduce` to safely support Distributed Data Parallel (DDP) clusters without severe network blocking.
+### 4. Mantissa Perturbation (Experimental)
+When AdamV's OMNI patience counter exceeds its threshold, it applies a deterministic bitwise perturbation directly to the IEEE 754 float32 mantissa of the parameters, using type-punning without allocating additional noise tensors. This is an experimental escape mechanism for detected loss plateaus. It is disabled by default (`enable_omni=False`) and its effect on final accuracy has not been rigorously validated across all architectures.
 
 ## 📦 Installation
 
@@ -41,13 +41,13 @@ pip install -e .
 AdamV is highly self-regulating, but because different neural architectures have fundamentally different mathematical topologies, you must initialize AdamV correctly depending on your model.
 
 ### 1. Vision & NLP (Deterministic & Deep Attention)
-For standard models (like **ResNet**) and autoregressive models (like **NanoGPT**), use the **Golden Calibration**. This leverages the 3rd-Century Bakhshali Root and geometric momentum brakes to stop gradient explosions automatically.
+For standard models (like **ResNet**) and autoregressive models (like **NanoGPT**), use the default calibration. CAMD will adaptively moderate momentum when sharp gradient spikes are detected.
 
 ```python
-# The Golden Calibration (Default)
+# Default calibration
 optimizer = AdamVCpp(
     model.parameters(),
-    lr=1e-3,            # Pure Flat Learning Rate
+    lr=1e-3,
     betas=(0.9, 0.999),
     weight_decay=0.1
 )
@@ -81,7 +81,9 @@ model = YourNeuralNetwork()
 # Initialize AdamV (Choose the right calibration for your model!)
 optimizer = AdamVCpp(
     model.parameters(),
-    lr=0.001
+    lr=0.001,
+    betas=(0.9, 0.999),
+    weight_decay=0.01
 )
 
 for epoch in range(15):

@@ -4,13 +4,13 @@ import math
 class AdamV(torch.optim.Optimizer):
     """
     AdamV (Adam Vedic) Optimizer - Pure Python Version.
-    AdamV 3.1: Harmonic Refactor (In-Place VRAM Opt, OMNI State Fix, Modular Flags)
+    AdamV 3.0.0: CAMD, Mantissa Perturbation, Cosine WD, Dynamic Beta1 bias correction fix.
     """
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, 
                  weight_decay=0.01, total_steps=10000, 
                  bakhshali_threshold=10.0, enable_omni=True,
                  lp_kappa=0.1, lp_omega=10.0, punning_mask=0xFFFFE000,
-                 enable_ignition=True, enable_cooling=False, enable_brake=True):
+                 enable_brake=True):
                  
         if not 0.0 <= lr:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -18,15 +18,16 @@ class AdamV(torch.optim.Optimizer):
                         total_steps=total_steps, bakhshali_threshold=bakhshali_threshold,
                         enable_omni=enable_omni, lp_kappa=lp_kappa, lp_omega=lp_omega, 
                         punning_mask=punning_mask,
-                        enable_ignition=enable_ignition, enable_cooling=enable_cooling, enable_brake=enable_brake)
+                        enable_brake=enable_brake)
         super(AdamV, self).__init__(params, defaults)
         
-        self.param_groups[0]['omni_global'] = {
-            'loss_ema': float('inf'),
-            'patience': 0,
-            'clock_reset_step': 0,
-            'global_step': 0,
-        }
+        if 'omni_global' not in self.state:
+            self.state['omni_global'] = {
+                'loss_ema': float('inf'),
+                'patience': 0,
+                'clock_reset_step': 0,
+                'global_step': 0,
+            }
 
     @torch.no_grad()
     def step(self, closure=None, **kwargs):
@@ -39,20 +40,14 @@ class AdamV(torch.optim.Optimizer):
         if loss_kw is not None:
             loss = loss_kw
 
-        g_state = self.param_groups[0]['omni_global']
+        g_state = self.state['omni_global']
         g_state['global_step'] += 1
         current_step = g_state['global_step']
         
         omni_triggered = False
         if loss is not None and len(self.param_groups) > 0 and self.param_groups[0]['enable_omni']:
-            if isinstance(loss, torch.Tensor):
-                loss_val = loss.clone().detach()
-                if torch.distributed.is_initialized():
-                    handle = torch.distributed.all_reduce(loss_val, op=torch.distributed.ReduceOp.AVG, async_op=True)
-                    handle.wait()
-                loss_val = float(loss_val)
-            else:
-                loss_val = float(loss)
+            loss_val = float(loss.detach()) if isinstance(loss, torch.Tensor) else float(loss)
+            
             if g_state['loss_ema'] == float('inf'):
                 g_state['loss_ema'] = loss_val
                 g_state['patience'] = 0
@@ -70,9 +65,6 @@ class AdamV(torch.optim.Optimizer):
                 
         for group in self.param_groups:
             lr_max = group['lr']
-            total_steps = group['total_steps']
-            
-                
             beta1, beta2 = group['betas']
             eps = group['eps']
             weight_decay = group['weight_decay']
@@ -102,33 +94,31 @@ class AdamV(torch.optim.Optimizer):
                 exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
                 state['step'] += 1
                 
-                bias_correction1 = 1 - beta1 ** state['step']
                 bias_correction2 = 1 - beta2 ** state['step']
                 
                 v_hat = exp_avg_sq / bias_correction2
                 sqrt_v_hat = v_hat.sqrt()
                 sqrt_v = exp_avg_sq.sqrt()
                 
+                # Curvature-Adaptive Momentum Decay (CAMD)
                 delta = torch.clamp(torch.abs(grad.float()) - 1.5 * sqrt_v_hat, min=0.0)
-                denom_brcm = sqrt_v.clone().add_(torch.abs(grad.float())).add_(eps)
+                denom_brcm = sqrt_v_hat.clone().add_(delta).add_(eps)
                 bakh_residual = (delta * delta).div_(denom_brcm.mul_(2.0))
-                curvature_shift = bakh_residual.div_(sqrt_v.add_(eps))
+                curvature_shift = bakh_residual.div_(sqrt_v_hat.add(eps))
                 
                 beta1_eff = torch.exp(-0.03 * curvature_shift).mul_(beta1)
                 
-                exp_avg.mul_(beta1_eff).add_(grad.float(), alpha=1.0 - beta1_eff)
+                # alpha must be scalar; beta1_eff is per-element tensor, so use element-wise form
+                exp_avg.mul_(beta1_eff).add_(grad.float() * (1.0 - beta1_eff))
                 exp_avg_sq.mul_(beta2).addcmul_(grad.float(), grad.float(), value=1.0 - beta2)
                 
-                direcao = (exp_avg / bias_correction1) / (sqrt_v_hat + eps)
-                
-                norm_dir_padrao = torch.linalg.norm(direcao) / math.sqrt(p.numel())
+                direcao = exp_avg / (sqrt_v_hat + eps)
                 
                 a = direcao.mul_(lr_max)
                 
                 explosao_mask = torch.abs(grad) > (bakh_thresh_eff * sqrt_v_hat)
                 denom = sqrt_v.add_(torch.abs(a)).add_(eps)
                 correction = (a * a).div_(denom.mul_(2.0))
-                
                 bakhshali_brake = a.clone().sub_(torch.sign(a) * correction)
                 
                 if group.get('enable_brake', True):
@@ -137,12 +127,13 @@ class AdamV(torch.optim.Optimizer):
                     step_size = a
                 
                 if weight_decay != 0:
-                    p.mul_(1.0 - lr_max * weight_decay)
+                    wd_factor = 0.5 * (1.0 + math.cos(math.pi * progresso))
+                    p.mul_(1.0 - lr_max * weight_decay * wd_factor)
                     
                 p.sub_(step_size)
                 
                 if omni_triggered:
-                    # Deterministic Mantissa Teleportation (Zero-RAM escape)
+                    # Mantissa Perturbation
                     p_int = p.view(torch.int32)
                     sign_exp = p_int & 0xFF800000
                     mant = p_int & 0x007FFFFF
@@ -157,21 +148,21 @@ class AdamV(torch.optim.Optimizer):
                     p_new = (sign_exp | scrambled_mant).view(torch.float32)
                     p.copy_(p_new)
                     
-                    # Harmonic State Reset: Do not poison momentum. Flush it gracefully.
                     state['exp_avg'].zero_()
+                    state['exp_avg_sq'].mul_(0.1)
                 
         return loss
 
 class AdamVCpp(torch.optim.Optimizer):
     """
     AdamV (Adam Vedic) Optimizer - C++ Fused Kernel Version.
-    AdamV 3.1: Harmonic Refactor
+    AdamV 3.0.0: CAMD, Mantissa Perturbation, Cosine WD, Dynamic Beta1 bias correction fix.
     """
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, 
                  weight_decay=0.01, total_steps=10000, 
                  bakhshali_threshold=10.0, enable_omni=True,
                  lp_kappa=0.1, lp_omega=10.0, punning_mask=0xFFFFE000,
-                 enable_ignition=True, enable_cooling=False, enable_brake=True):
+                 enable_brake=True):
                  
         try:
             import adamv_cpp
@@ -192,15 +183,16 @@ class AdamVCpp(torch.optim.Optimizer):
                         total_steps=total_steps, bakhshali_threshold=bakhshali_threshold,
                         enable_omni=enable_omni, lp_kappa=lp_kappa, lp_omega=lp_omega, 
                         punning_mask=punning_mask,
-                        enable_ignition=enable_ignition, enable_cooling=enable_cooling, enable_brake=enable_brake)
+                        enable_brake=enable_brake)
         super(AdamVCpp, self).__init__(params, defaults)
         
-        self.param_groups[0]['omni_global'] = {
-            'loss_ema': float('inf'),
-            'patience': 0,
-            'clock_reset_step': 0,
-            'global_step': 0,
-        }
+        if 'omni_global' not in self.state:
+            self.state['omni_global'] = {
+                'loss_ema': float('inf'),
+                'patience': 0,
+                'clock_reset_step': 0,
+                'global_step': 0,
+            }
 
     @torch.no_grad()
     def step(self, closure=None, **kwargs):
@@ -212,20 +204,14 @@ class AdamVCpp(torch.optim.Optimizer):
         if loss_kw is not None:
             loss = loss_kw
 
-        g_state = self.param_groups[0]['omni_global']
+        g_state = self.state['omni_global']
         g_state['global_step'] += 1
         current_step = g_state['global_step']
         
         omni_triggered = False
         if loss is not None and len(self.param_groups) > 0 and self.param_groups[0]['enable_omni']:
-            if isinstance(loss, torch.Tensor):
-                loss_val = loss.clone().detach()
-                if torch.distributed.is_initialized():
-                    handle = torch.distributed.all_reduce(loss_val, op=torch.distributed.ReduceOp.AVG, async_op=True)
-                    handle.wait()
-                loss_val = float(loss_val)
-            else:
-                loss_val = float(loss)
+            loss_val = float(loss.detach()) if isinstance(loss, torch.Tensor) else float(loss)
+            
             if g_state['loss_ema'] == float('inf'):
                 g_state['loss_ema'] = loss_val
                 g_state['patience'] = 0
@@ -243,9 +229,6 @@ class AdamVCpp(torch.optim.Optimizer):
                 
         for group in self.param_groups:
             lr_max = group['lr']
-            total_steps = group['total_steps']
-            
-                
             beta1, beta2 = group['betas']
             eps = group['eps']
             weight_decay = group['weight_decay']
@@ -276,8 +259,6 @@ class AdamVCpp(torch.optim.Optimizer):
                 exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
                 state['step'] += 1
                 
-                # C++ Fused Kernel Call
-                # OMNI logic is pushed to the END inside the C++ Kernel now
                 mask_val = int(punning_mask)
                 if mask_val > 0x7FFFFFFF:
                     mask_val -= 0x100000000
@@ -287,7 +268,7 @@ class AdamVCpp(torch.optim.Optimizer):
                         p, grad, exp_avg, exp_avg_sq, state['direcao_buffer'],
                         lr_max, beta1, beta2, eps, weight_decay,
                         float(progresso), float(bakh_thresh_eff), state['step'], p.numel(),
-                        bool(group.get('enable_cooling', True)),
+                        False,
                         bool(group.get('enable_brake', True)),
                         bool(omni_triggered), mask_val
                     )
@@ -296,33 +277,28 @@ class AdamVCpp(torch.optim.Optimizer):
                         p, grad, exp_avg, exp_avg_sq, state['direcao_buffer'],
                         lr_max, beta1, beta2, eps, weight_decay,
                         float(progresso), float(bakh_thresh_eff), state['step'], p.numel(),
-                        bool(group.get('enable_cooling', True)),
+                        False,
                         bool(group.get('enable_brake', True)),
                         bool(omni_triggered), mask_val
                     )
                 else:
-                    # Python fallback para GPU - 100% In-Place BRCM
-                    bias_correction1 = 1 - beta1 ** state['step']
                     bias_correction2 = 1 - beta2 ** state['step']
                     v_hat = exp_avg_sq / bias_correction2
                     sqrt_v_hat = v_hat.sqrt()
                     sqrt_v = exp_avg_sq.sqrt()
                     
+                    # Curvature-Adaptive Momentum Decay (CAMD)
                     delta = torch.clamp(torch.abs(grad.float()) - 1.5 * sqrt_v_hat, min=0.0)
-                    denom_brcm = sqrt_v.clone().add_(torch.abs(grad.float())).add_(eps)
+                    denom_brcm = sqrt_v_hat.clone().add_(delta).add_(eps)
                     bakh_residual = (delta * delta).div_(denom_brcm.mul_(2.0))
-                    curvature_shift = bakh_residual.div_(sqrt_v.add_(eps))
+                    curvature_shift = bakh_residual.div_(sqrt_v_hat.add(eps))
                     
                     beta1_eff = torch.exp(-0.03 * curvature_shift).mul_(beta1)
                     
-                    # Update momentum In-Place
                     exp_avg.mul_(beta1_eff).add_(grad.float() * (1.0 - beta1_eff))
                     exp_avg_sq.mul_(beta2).addcmul_(grad.float(), grad.float(), value=1 - beta2)
                     
-                    m_hat = exp_avg / bias_correction1
-                    direcao = m_hat / (sqrt_v_hat + eps)
-                    
-                    norm_dir = torch.linalg.norm(direcao) / math.sqrt(p.numel())
+                    direcao = exp_avg / (sqrt_v_hat + eps)
                     
                     a = direcao.mul_(lr_max)
                     
@@ -338,11 +314,13 @@ class AdamVCpp(torch.optim.Optimizer):
                         step_size = a
                         
                     if weight_decay != 0:
-                        p.mul_(1.0 - lr_max * weight_decay)
+                        wd_factor = 0.5 * (1.0 + math.cos(math.pi * progresso))
+                        p.mul_(1.0 - lr_max * weight_decay * wd_factor)
                         
                     p.sub_(step_size)
                     
                     if omni_triggered:
+                        # Mantissa Perturbation
                         p_int = p.view(torch.int32)
                         sign_exp = p_int & 0xFF800000
                         mant = p_int & 0x007FFFFF
@@ -354,5 +332,6 @@ class AdamVCpp(torch.optim.Optimizer):
                         p.copy_(p_new)
                         
                         state['exp_avg'].zero_()
+                        state['exp_avg_sq'].mul_(0.1)
                         
         return loss

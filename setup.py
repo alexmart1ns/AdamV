@@ -41,8 +41,9 @@ if torch.cuda.is_available() or os.environ.get('FORCE_CUDA', '0') == '1':
 
 setup(
     name='adamv',
-    version='2.0.3',
+    version='3.0.0',
     packages=['adamv'],
+    install_requires=['torch>=2.0'],
     ext_modules=ext_modules,
     cmdclass={
         'build_ext': BuildExtension

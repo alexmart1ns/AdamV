@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-08-16
+### Changed
+- **Unified Algorithm Across All Backends**: Pure Python, C++, and CUDA backends now implement an identical algorithmic specification, eliminating divergent behaviour between execution paths.
+- **Fixed Bias Correction for Dynamic β₁**: Bias correction term `bias_correction1` is now computed using the per-step effective `beta1_dynamic` rather than the static base value, yielding correct bias-corrected momentum estimates across all backends.
+- **Removed Levy Flight**: The Levy Flight noise injection mechanism has been removed entirely. It introduced uncontrolled stochastic perturbations incompatible with reproducible benchmarking.
+- **Fixed Lag-1 Norm (CUDA: prepare/update split)**: The CUDA kernel now correctly separates the prepare (moment update + direction buffer write) and update (parameter step) passes, ensuring the lag-1 norm is computed on the updated direction buffer rather than stale values.
+- **Fixed BRCM Delta Factor (1.5×)**: The Bakhshali Residual-Coupled Momentum excess-shock threshold is now consistently set to `1.5 × sqrt(v_hat)` across all backends (previously inconsistent between Python and CUDA paths).
+- **Fixed β₁ Decay Scale (0.03)**: The exponential decay scale for dynamic β₁ is uniformly `0.03` across all backends (was `0.1` in some Python fallback paths).
+- **Removed DDP Sync-Block from Optimizer Step**: Removed the `all_reduce` synchronisation barrier that was embedded inside the optimizer step. DDP gradient synchronisation is the responsibility of the training loop, not the optimizer.
+- **Fixed Cosine Weight Decay**: Cosine-annealed weight decay (`wd_factor = 0.5 × (1 + cos(π × progress))`) is now applied consistently across all backends; it was missing from the CUDA update kernel.
+- **Removed Golden Calibration Onda Perturbation**: Removed the `1 + 0.01 × cos(4π × progress)` multiplicative LR perturbation from the CUDA kernel. This undocumented modulation introduced irreproducible LR schedules.
+- **Benchmark Imports from Library Directly**: `benchmarks/run_global_stress_suite.py` no longer contains inline CUDA/C++ source or redefined optimizer classes. It now imports `AdamV` and `AdamVCpp` from the `adamv` package, ensuring the benchmark tests the shipped library.
+- **Renamed: 'Basin Hopping' → 'Mantissa Perturbation'**: The OMNI-ModBH feature is now accurately described as Mantissa Perturbation throughout documentation and code comments.
+- **Renamed: 'Bakhshali Root' → 'CAMD' (Curvature-Adaptive Momentum Decay)**: The primary momentum mechanism is now named to reflect its function rather than its historical inspiration.
+- **Removed `enable_ignition` and `enable_cooling` from Optimizer API**: Both parameters have been removed from the public `AdamV` and `AdamVCpp` constructors. LR warm-up and cooling should be handled by standard PyTorch `LRScheduler` objects.
+
 ## [2.0.2-alpha] - 2026-08-16
 ### Added
 - **Global Stress Suite**: Added `run_global_stress_suite.py`, a 100% neutral, multi-seed statistical validation suite running 5 seeds across ResNet-18, VAE, and NanoGPT with p-value validation.

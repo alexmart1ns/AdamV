@@ -1,6 +1,8 @@
 #include <torch/extension.h>
 #include <cmath>
 #include <vector>
+#include <cstring>
+#include <algorithm>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -28,7 +30,9 @@ void adamv_step_cpu_template(
     int step,
     int D,
     bool enable_cooling,
-    bool enable_brake)
+    bool enable_brake,
+    bool omni_triggered,
+    int mask_val)
 {
     float bias_correction2 = 1.0f - std::pow(beta2, static_cast<float>(step));
     
@@ -59,6 +63,7 @@ void adamv_step_cpu_template(
     }
     
     double norm_dir_sq_new = 0.0;
+    float wd_factor = 0.5f * (1.0f + std::cos(static_cast<float>(M_PI) * progresso));
     
     #pragma omp parallel for reduction(+:norm_dir_sq_new)
     for (int i = 0; i < numel; ++i) {
@@ -73,18 +78,16 @@ void adamv_step_cpu_template(
         float v_hat = v / bias_correction2;
         float sqrt_v_hat = std::sqrt(v_hat);
         
-        float delta = std::max(0.0f, std::abs(g) - sqrt_v_hat);
+        float delta = std::max(0.0f, std::abs(g) - 1.5f * sqrt_v_hat);
         float denom_brcm = sqrt_v_hat + delta + eps;
         float bakh_residual = (delta * delta) / (2.0f * denom_brcm);
         float curvature_shift = bakh_residual / (sqrt_v_hat + eps);
-        float beta1_eff = beta1 * std::exp(-curvature_shift);
-        
-        float bias_correction1_dynamic = 1.0f - std::pow(beta1_eff, static_cast<float>(step));
+        float beta1_eff = beta1 * std::exp(-0.03f * curvature_shift);
         
         m = beta1_eff * m + (1.0f - beta1_eff) * g;
         exp_avg_acc[i] = m;
         
-        float dir = (m / bias_correction1_dynamic) / (sqrt_v_hat + eps);
+        float dir = m / (sqrt_v_hat + eps);
         norm_dir_sq_new += static_cast<double>(dir * dir);
         
         float a = lr_efetivo * dir;
@@ -101,24 +104,26 @@ void adamv_step_cpu_template(
             }
         }
         
-        // Orthogonal Truncated Levy Flight Injection
-        uint32_t seed = (static_cast<uint32_t>(step) * 31337) ^ static_cast<uint32_t>(i);
-        seed = (seed * 1664525) + 1013904223;
-        float u = (static_cast<float>(seed) / 4294967296.0f) * 0.999f + 0.0005f;
-        float cauchy = std::tan(static_cast<float>(M_PI) * (u - 0.5f));
-        cauchy = std::max(-100.0f, std::min(100.0f, cauchy));
-        float levy_scale = sqrt_v_hat / (sqrt_v_hat + 1.0f);
-        float levy_mult = 0.001f * std::max(0.0f, 1.0f - progresso);
-        float levy_jump = lr_efetivo * levy_mult * cauchy * levy_scale;
-        
-        step_size -= levy_jump;
-        
         if (weight_decay != 0.0f) {
-            float wd_factor = 0.5f * (1.0f + std::cos(static_cast<float>(M_PI) * progresso));
             w_val = w_val * (1.0f - lr * weight_decay * wd_factor);
         }
         
         p_acc[i] = static_cast<scalar_t>(w_val - step_size);
+        
+        if (omni_triggered) {
+            if constexpr (std::is_same<scalar_t, float>::value) {
+                float w_new = static_cast<float>(p_acc[i]);
+                uint32_t p_bits;
+                std::memcpy(&p_bits, &w_new, 4);
+                uint32_t mant = p_bits & 0x007FFFFF;
+                mant = (((mant + 1) * 31337U) & 0x007FFFFF) & static_cast<uint32_t>(mask_val);
+                p_bits = (p_bits & 0xFF800000U) | mant;
+                std::memcpy(&w_new, &p_bits, 4);
+                p_acc[i] = static_cast<scalar_t>(w_new);
+            }
+            exp_avg_acc[i] = 0.0f;
+            exp_avg_sq_acc[i] *= 0.1f;
+        }
     }
     
     direcao_acc[0] = static_cast<float>(norm_dir_sq_new);
@@ -130,7 +135,6 @@ void adamv_step_cpu(
     at::Tensor exp_avg,
     at::Tensor exp_avg_sq,
     at::Tensor direcao,
-
     float lr,
     float beta1,
     float beta2,
@@ -141,7 +145,9 @@ void adamv_step_cpu(
     int step,
     int D,
     bool enable_cooling,
-    bool enable_brake) 
+    bool enable_brake,
+    bool omni_triggered,
+    int mask_val) 
 {
     CHECK_INPUT(p);
     CHECK_INPUT(grad);
@@ -152,7 +158,7 @@ void adamv_step_cpu(
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, p.scalar_type(), "adamv_step_cpu", ([&] {
         adamv_step_cpu_template<scalar_t>(
             p, grad, exp_avg, exp_avg_sq, direcao,
-            lr, beta1, beta2, eps, weight_decay, progresso, bakh_thresh, step, D, enable_cooling, enable_brake);
+            lr, beta1, beta2, eps, weight_decay, progresso, bakh_thresh, step, D, enable_cooling, enable_brake, omni_triggered, mask_val);
     }));
 }
 
