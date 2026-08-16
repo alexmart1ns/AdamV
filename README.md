@@ -2,17 +2,17 @@
 
 ---
 
-# 🧠 AdamV 2.0.2 alpha: Geometrically Adaptive Optimizer
+# 🧠 AdamV 2.0.3: Geometrically Adaptive Optimizer
 
 ![AdamV vs AdamW Duel](assets/adamv_duel_banner.jpg)
 
-AdamV 2.0.2 alpha (Adam-Vedic) is a state-of-the-art optimization algorithm for PyTorch that fuses ancient Vedic mathematics with numerical topology to create a geometrically adaptive optimizer. It relies on a highly optimized **C++/CUDA implementation** to operate at bare-metal speeds.
+AdamV 2.0.3 is an optimization algorithm for PyTorch that incorporates numerical topology and geometric momentum adjustments. It utilizes a fused C++/CUDA implementation to optimize memory-bandwidth efficiency and includes native `BFloat16` support.
 
-In rigorous, multi-seed stress testing, **AdamV 2.0.2 alpha massacred AdamW on NanoGPT**, achieving significantly lower validation loss across multiple independent seeds, as validated by the global stress suite.
+In our multi-seed benchmarking under flat learning rate conditions, AdamV demonstrates improved convergence characteristics compared to AdamW, as measured by Welch's t-test in the provided stress suite.
 
-## ⚙️ The Pillars of AdamV 2.0.2 alpha
+## ⚙️ The Pillars of AdamV 2.0.3
 
-AdamV navigates non-convex loss landscapes using breakthrough mathematical innovations:
+AdamV introduces the following architectural mechanisms:
 
 ### 1. The Bakhshali Root & BRCM Geometric Momentum Brakes
 AdamV utilizes the ancient Bakhshali approximation method combined with Bakhshali Residual-Coupled Momentum (BRCM). By scaling the momentum decay ($\beta_1$) exponentially based on residual collision force ($\sqrt{v_t}$), the optimizer acts as a dynamic shock absorber. It applies geometric momentum brakes in tight topological ravines to restrain explosive gradients, while accelerating linearly on barren plateaus.
@@ -20,11 +20,11 @@ AdamV utilizes the ancient Bakhshali approximation method combined with Bakhshal
 ### 2. Curvature-Driven Dynamic Inertia
 Instead of using a rigid momentum decay, AdamV calculates the local Signal-to-Noise Ratio. On flat plateaus, it drops inertia to accelerate immediately. In chaotic ravines, it increases inertia to ignore noise and stabilize descent.
 
-### 3. Log-Periodic Cooling
-AdamV incorporates autonomous **Log-Periodic Cooling** using Ramanujan Continued Fraction expansions. This dynamically scales down the learning rate in a log-periodic envelope, preventing the "blind crushing" effect seen with traditional step schedulers and allowing organic convergence into deeper minima basins.
+### 3. Decoupled Architecture (Pure Optimizer)
+Unlike earlier experimental versions, AdamV 2.0.3 is a pure optimizer. It strips away hardcoded cooling envelopes and weight decay schedulers, ensuring 100% Drop-in Compatibility with HuggingFace Trainer and external PyTorch `LRScheduler` objects.
 
-### 4. Quantum Escape (OMNI-ModBH via Type-Punning)
-When AdamV detects a barren plateau, it triggers an absolute Basin Hop. Running at bare-metal speeds on the GPU, it applies bitwise masks directly to the IEEE 754 float32 mantissa (Type-Punning), teleporting weights to adjacent basins without causing warp divergence or destroying scale exponents.
+### 4. Basin Hopping (Safe Mantissa Type-Punning & DDP)
+When AdamV detects a barren plateau, it triggers a Basin Hop. It applies bitwise masks directly to the IEEE 754 float32 mantissa to perturb the weights without allocating additional noise tensors. This technique is guarded at compile time via `if constexpr` and relies on an asynchronous `all_reduce` to safely support Distributed Data Parallel (DDP) clusters without severe network blocking.
 
 ## 📦 Installation
 
@@ -47,10 +47,9 @@ For standard models (like **ResNet**) and autoregressive models (like **NanoGPT*
 # The Golden Calibration (Default)
 optimizer = AdamVCpp(
     model.parameters(),
-    lr=1e-3,            # Flat Learning Rate (No Schedulers Needed!)
+    lr=1e-3,            # Pure Flat Learning Rate
     betas=(0.9, 0.999),
     weight_decay=0.1
-    # Hidden defaults: use_bakhshali=True, bakhshali_threshold=50.0, enable_brcm=True
 )
 ```
 
@@ -64,7 +63,7 @@ optimizer = AdamVCpp(
     lr=1e-3,
     betas=(0.9, 0.999),
     weight_decay=0.0,
-    enable_brcm=False,             # Turn OFF Geometric Brakes (let noise flow)
+    enable_brake=False,            # Turn OFF Geometric Brakes (let noise flow)
     bakhshali_threshold=1000.0     # Expand the shock tolerance for noise
 )
 ```

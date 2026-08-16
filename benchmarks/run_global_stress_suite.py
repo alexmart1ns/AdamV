@@ -917,12 +917,7 @@ def run_global_stress_test():
                 if opt_name == "AdamV":
                     for group in optimizer.param_groups:
                         group['total_steps'] = total_steps
-                    scheduler = None
-                else:
-                    if scenario == "Vision" or scenario == "Generative":
-                        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=1e-6)
-                    else:
-                        scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr, total_steps=total_steps, pct_start=0.1)
+                scheduler = None
 
                 # Training Loops
                 if scenario == "Vision":
@@ -1022,7 +1017,7 @@ def run_global_stress_test():
     for scenario in scenarios:
         adamw_vals = final_metrics[scenario]["AdamW"]
         adamv_vals = final_metrics[scenario]["AdamV"]
-        t_stat, p_val = ttest_ind(adamw_vals, adamv_vals)
+        t_stat, p_val = ttest_ind(adamw_vals, adamv_vals, equal_var=False)
         print(f"[{scenario}] AdamW Mean: {np.mean(adamw_vals):.4f} | AdamV Mean: {np.mean(adamv_vals):.4f}")
         print(f"[{scenario}] Welch's t-test p-value: {p_val:.4f}")
         if p_val < 0.05:
@@ -1043,7 +1038,7 @@ def run_global_stress_test():
         
         for opt, color in [("AdamW", "#1f77b4"), ("AdamV", "#ff7f0e")]:
             # Adjust legend to reflect Fair Fight Protocol
-            label = f"{opt} (Flat LR)" if opt == "AdamV" else f"{opt} (with Scheduler)"
+            label = f"{opt} (Flat LR)"
             opt_df = scenario_df[scenario_df["Optimizer"] == opt]
             if opt_df.empty: continue
             

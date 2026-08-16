@@ -21,7 +21,7 @@ class AdamV(torch.optim.Optimizer):
                         enable_ignition=enable_ignition, enable_cooling=enable_cooling, enable_brake=enable_brake)
         super(AdamV, self).__init__(params, defaults)
         
-        self.state['omni_global'] = {
+        self.param_groups[0]['omni_global'] = {
             'loss_ema': float('inf'),
             'patience': 0,
             'clock_reset_step': 0,
@@ -29,22 +29,30 @@ class AdamV(torch.optim.Optimizer):
         }
 
     @torch.no_grad()
-    def step(self, closure=None, current_loss=None):
+    def step(self, closure=None, **kwargs):
         loss = None
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
                 
-        if current_loss is not None:
-            loss = current_loss
+        loss_kw = kwargs.get('loss', None)
+        if loss_kw is not None:
+            loss = loss_kw
 
-        g_state = self.state['omni_global']
+        g_state = self.param_groups[0]['omni_global']
         g_state['global_step'] += 1
         current_step = g_state['global_step']
         
         omni_triggered = False
         if loss is not None and len(self.param_groups) > 0 and self.param_groups[0]['enable_omni']:
-            loss_val = float(loss) if isinstance(loss, torch.Tensor) else loss
+            if isinstance(loss, torch.Tensor):
+                loss_val = loss.clone().detach()
+                if torch.distributed.is_initialized():
+                    handle = torch.distributed.all_reduce(loss_val, op=torch.distributed.ReduceOp.AVG, async_op=True)
+                    handle.wait()
+                loss_val = float(loss_val)
+            else:
+                loss_val = float(loss)
             if g_state['loss_ema'] == float('inf'):
                 g_state['loss_ema'] = loss_val
                 g_state['patience'] = 0
@@ -64,10 +72,6 @@ class AdamV(torch.optim.Optimizer):
             lr_max = group['lr']
             total_steps = group['total_steps']
             
-            # Autonomous Ignition
-            if group.get('enable_ignition', True):
-                ignition = min(1.0, current_step / max(1.0, total_steps * 0.10))
-                lr_max = lr_max * ignition
                 
             beta1, beta2 = group['betas']
             eps = group['eps']
@@ -98,31 +102,30 @@ class AdamV(torch.optim.Optimizer):
                 exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
                 state['step'] += 1
                 
-                # In-Place Momentum Update
-                snr = (exp_avg * exp_avg) / (exp_avg_sq + eps)
-                beta1_eff = torch.clamp(beta1 + 0.05 * (1.0 - 2.0 * snr), 0.0, 1.0)
-                exp_avg.mul_(beta1_eff).add_(grad.float(), alpha=1.0 - beta1_eff)
-                
-                exp_avg_sq.mul_(beta2).addcmul_(grad.float(), grad.float(), value=1.0 - beta2)
-                
                 bias_correction1 = 1 - beta1 ** state['step']
                 bias_correction2 = 1 - beta2 ** state['step']
                 
-                sqrt_v = exp_avg_sq.sqrt().div_(math.sqrt(bias_correction2))
-                direcao = (exp_avg / bias_correction1) / (sqrt_v + eps)
+                v_hat = exp_avg_sq / bias_correction2
+                sqrt_v_hat = v_hat.sqrt()
+                sqrt_v = exp_avg_sq.sqrt()
+                
+                delta = torch.clamp(torch.abs(grad.float()) - 1.5 * sqrt_v_hat, min=0.0)
+                denom_brcm = sqrt_v.clone().add_(torch.abs(grad.float())).add_(eps)
+                bakh_residual = (delta * delta).div_(denom_brcm.mul_(2.0))
+                curvature_shift = bakh_residual.div_(sqrt_v.add_(eps))
+                
+                beta1_eff = torch.exp(-0.03 * curvature_shift).mul_(beta1)
+                
+                exp_avg.mul_(beta1_eff).add_(grad.float(), alpha=1.0 - beta1_eff)
+                exp_avg_sq.mul_(beta2).addcmul_(grad.float(), grad.float(), value=1.0 - beta2)
+                
+                direcao = (exp_avg / bias_correction1) / (sqrt_v_hat + eps)
                 
                 norm_dir_padrao = torch.linalg.norm(direcao) / math.sqrt(p.numel())
                 
-                if group.get('enable_cooling', False):
-                    envelope = (1.0 + progresso) / (progresso + norm_dir_padrao + eps)
-                    cooling_factor = 0.5 * (1.0 + math.cos(math.pi * progresso))
-                    lr_efetivo = lr_max * torch.clamp(envelope * cooling_factor, max=1.5)
-                else:
-                    lr_efetivo = lr_max
+                a = direcao.mul_(lr_max)
                 
-                a = direcao.mul_(lr_efetivo)
-                
-                explosao_mask = torch.abs(grad) > (bakh_thresh_eff * sqrt_v)
+                explosao_mask = torch.abs(grad) > (bakh_thresh_eff * sqrt_v_hat)
                 denom = sqrt_v.add_(torch.abs(a)).add_(eps)
                 correction = (a * a).div_(denom.mul_(2.0))
                 
@@ -134,8 +137,7 @@ class AdamV(torch.optim.Optimizer):
                     step_size = a
                 
                 if weight_decay != 0:
-                    wd_factor = 0.5 * (1.0 + math.cos(math.pi * progresso))
-                    p.mul_(1.0 - lr_max * weight_decay * wd_factor)
+                    p.mul_(1.0 - lr_max * weight_decay)
                     
                 p.sub_(step_size)
                 
@@ -157,7 +159,6 @@ class AdamV(torch.optim.Optimizer):
                     
                     # Harmonic State Reset: Do not poison momentum. Flush it gracefully.
                     state['exp_avg'].zero_()
-                    state['exp_avg_sq'].mul_(0.1)
                 
         return loss
 
@@ -194,7 +195,7 @@ class AdamVCpp(torch.optim.Optimizer):
                         enable_ignition=enable_ignition, enable_cooling=enable_cooling, enable_brake=enable_brake)
         super(AdamVCpp, self).__init__(params, defaults)
         
-        self.state['omni_global'] = {
+        self.param_groups[0]['omni_global'] = {
             'loss_ema': float('inf'),
             'patience': 0,
             'clock_reset_step': 0,
@@ -202,21 +203,29 @@ class AdamVCpp(torch.optim.Optimizer):
         }
 
     @torch.no_grad()
-    def step(self, closure=None, current_loss=None):
+    def step(self, closure=None, **kwargs):
         loss = None
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
-        if current_loss is not None:
-            loss = current_loss
+        loss_kw = kwargs.get('loss', None)
+        if loss_kw is not None:
+            loss = loss_kw
 
-        g_state = self.state['omni_global']
+        g_state = self.param_groups[0]['omni_global']
         g_state['global_step'] += 1
         current_step = g_state['global_step']
         
         omni_triggered = False
         if loss is not None and len(self.param_groups) > 0 and self.param_groups[0]['enable_omni']:
-            loss_val = float(loss) if isinstance(loss, torch.Tensor) else loss
+            if isinstance(loss, torch.Tensor):
+                loss_val = loss.clone().detach()
+                if torch.distributed.is_initialized():
+                    handle = torch.distributed.all_reduce(loss_val, op=torch.distributed.ReduceOp.AVG, async_op=True)
+                    handle.wait()
+                loss_val = float(loss_val)
+            else:
+                loss_val = float(loss)
             if g_state['loss_ema'] == float('inf'):
                 g_state['loss_ema'] = loss_val
                 g_state['patience'] = 0
@@ -236,9 +245,6 @@ class AdamVCpp(torch.optim.Optimizer):
             lr_max = group['lr']
             total_steps = group['total_steps']
             
-            if group.get('enable_ignition', True):
-                ignition = min(1.0, current_step / max(1.0, total_steps * 0.10))
-                lr_max = lr_max * ignition
                 
             beta1, beta2 = group['betas']
             eps = group['eps']
@@ -298,32 +304,27 @@ class AdamVCpp(torch.optim.Optimizer):
                     # Python fallback para GPU - 100% In-Place BRCM
                     bias_correction1 = 1 - beta1 ** state['step']
                     bias_correction2 = 1 - beta2 ** state['step']
-                    
+                    v_hat = exp_avg_sq / bias_correction2
+                    sqrt_v_hat = v_hat.sqrt()
                     sqrt_v = exp_avg_sq.sqrt()
+                    
+                    delta = torch.clamp(torch.abs(grad.float()) - 1.5 * sqrt_v_hat, min=0.0)
                     denom_brcm = sqrt_v.clone().add_(torch.abs(grad.float())).add_(eps)
-                    bakh_residual = (grad.float() * grad.float()).div_(denom_brcm.mul_(2.0))
+                    bakh_residual = (delta * delta).div_(denom_brcm.mul_(2.0))
                     curvature_shift = bakh_residual.div_(sqrt_v.add_(eps))
                     
-                    beta1_eff = torch.exp(-curvature_shift).mul_(beta1)
+                    beta1_eff = torch.exp(-0.03 * curvature_shift).mul_(beta1)
                     
                     # Update momentum In-Place
                     exp_avg.mul_(beta1_eff).add_(grad.float() * (1.0 - beta1_eff))
                     exp_avg_sq.mul_(beta2).addcmul_(grad.float(), grad.float(), value=1 - beta2)
                     
                     m_hat = exp_avg / bias_correction1
-                    v_hat = exp_avg_sq / bias_correction2
-                    direcao = m_hat / (v_hat.sqrt() + eps)
+                    direcao = m_hat / (sqrt_v_hat + eps)
                     
                     norm_dir = torch.linalg.norm(direcao) / math.sqrt(p.numel())
-                    if group.get('enable_cooling', False):
-                        envelope = (1.0 + progresso) / (progresso + norm_dir + eps)
-                        cooling = 0.5 * (1.0 + math.cos(math.pi * progresso))
-                        lr_efetivo = lr_max * torch.clamp(envelope * cooling, max=1.5)
-                    else:
-                        lr_efetivo = lr_max
                     
-                    a = direcao.mul_(lr_efetivo)
-                    sqrt_v_hat = v_hat.sqrt()
+                    a = direcao.mul_(lr_max)
                     
                     explosao_mask = torch.abs(grad) > (bakh_thresh_eff * sqrt_v_hat)
                     
@@ -337,8 +338,7 @@ class AdamVCpp(torch.optim.Optimizer):
                         step_size = a
                         
                     if weight_decay != 0:
-                        wd_factor = 0.5 * (1.0 + math.cos(math.pi * progresso))
-                        p.mul_(1.0 - lr_max * weight_decay * wd_factor)
+                        p.mul_(1.0 - lr_max * weight_decay)
                         
                     p.sub_(step_size)
                     
@@ -354,6 +354,5 @@ class AdamVCpp(torch.optim.Optimizer):
                         p.copy_(p_new)
                         
                         state['exp_avg'].zero_()
-                        state['exp_avg_sq'].mul_(0.1)
                         
         return loss
