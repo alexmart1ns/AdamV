@@ -38,7 +38,7 @@ cpp_source = \"\"\"
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
 
-void adamv_step_cuda(at::Tensor p, at::Tensor grad, at::Tensor exp_avg, at::Tensor exp_avg_sq, at::Tensor direcao, float lr, float beta1, float beta2, float eps, float weight_decay, float progresso, float bakh_thresh_eff, int step, int D, bool omni_triggered, int64_t punning_mask);
+void adamv_step_cuda(at::Tensor p, at::Tensor grad, at::Tensor exp_avg, at::Tensor exp_avg_sq, at::Tensor direcao, float lr, float beta1, float beta2, float eps, float weight_decay, float progresso, float bakh_thresh_eff, int step, int D, bool enable_cooling, bool enable_brake, bool omni_triggered, int64_t punning_mask);
 \"\"\"
 
 adamv_cuda_module = torch.utils.cpp_extension.load_inline(

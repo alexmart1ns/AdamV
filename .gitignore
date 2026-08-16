@@ -5,3 +5,11 @@
 *.pyd
 *.so
 *.egg-info/
+/.basinfy
+.basinfyignore
+/.cursor
+/.claude
+/.agents
+.mcp.json
+/.windsurf
+GEMINI.md
